@@ -1,0 +1,40 @@
+{
+  "name": "onda-backend",
+  "version": "1.0.0",
+  "description": "Backend for Onda, a perps DEX on Hyperliquid.",
+  "main": "dist/index.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "serve": "node dist",
+    "dev": "npm run build && npm run serve",
+    "start": "node dist"
+  },
+  "keywords": [
+    "onda-backend"
+  ],
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
+    "viem": "^2.56.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.5.1",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}
