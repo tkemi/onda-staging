@@ -45,6 +45,7 @@ export const privy_webhook = async (req: Request, res: Response) => {
         .insert(deposits)
         .values({
             privy_wallet_id: wallet_id,
+            privy_address: recipient.toLowerCase(),
             asset: asset.address ? asset.address.toLowerCase() : asset.type,
             chain_caip2: caip2,
             amount: amount,

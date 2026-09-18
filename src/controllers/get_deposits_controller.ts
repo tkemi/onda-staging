@@ -25,6 +25,7 @@ export const get_deposits = async (req: Request, res: Response) => {
         .select({
             id: deposits.id,
             privy_wallet_id: deposits.privy_wallet_id,
+            privy_address: deposits.privy_address,
             amount: deposits.amount,
             tx_hash: deposits.tx_hash,
             sender: deposits.sender,

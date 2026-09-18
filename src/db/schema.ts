@@ -27,6 +27,7 @@ export const deposits = pgTable(
     {
         id: uuid("id").primaryKey().defaultRandom(),
         privy_wallet_id: text("privy_wallet_id").notNull(),
+        privy_address: text("privy_address").notNull(),
         asset: text("asset").notNull(),
         chain_caip2: text("chain_caip2").notNull(),
         amount: numeric("amount", {precision: 78, scale: 0}).notNull(),
