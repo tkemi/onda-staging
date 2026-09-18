@@ -12,6 +12,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "serve": "node dist",
+    "sweep": "npm run build && node dist/cron/sweeper.js",
+    "sweep:dev": "tsx src/cron/sweeper.ts",
     "dev": "npm run build && npm run serve",
     "start": "node dist"
   },
@@ -20,9 +22,10 @@
   ],
   "license": "ISC",
   "engines": {
-    "node": ">=18.18"
+    "node": ">=22.12"
   },
   "dependencies": {
+    "@privy-io/node": "^0.34.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",

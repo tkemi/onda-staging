@@ -1,8 +1,7 @@
 import {z} from "zod"
 import {Request, Response} from "express"
 import {db} from "../db"
-import {deposits, users} from "../db"
-import {eq} from "drizzle-orm";
+import {deposits} from "../db"
 
 const depositSchema = z.object({
     type: z.literal("wallet.funds_deposited"),
@@ -39,28 +38,13 @@ export const privy_webhook = async (req: Request, res: Response) => {
     }
 
     const {
-        caip2, asset, amount, transaction_hash, sender, recipient, block, idempotency_key
+        caip2, asset, amount, transaction_hash, sender, recipient, block, idempotency_key, wallet_id
     } = validateBody.data
-
-    const [user] = await db
-        .select({id: users.id})
-        .from(users)
-        .where(eq(users.privy_address, recipient.toLowerCase()))
-        .limit(1);
-
-    if (!user) {
-        console.error(`[webhook] deposit for unknown wallet ${recipient}, tx ${transaction_hash}`);
-
-        return res.status(200).json({
-            status: "ok",
-            handled: false,
-        });
-    }
 
     const [deposit] = await db
         .insert(deposits)
         .values({
-            user_id: user.id,
+            privy_wallet_id: wallet_id,
             asset: asset.address ? asset.address.toLowerCase() : asset.type,
             chain_caip2: caip2,
             amount: amount,
@@ -68,6 +52,7 @@ export const privy_webhook = async (req: Request, res: Response) => {
             sender: sender ? sender.toLowerCase() : null,
             block_number: block ? String(block.number) : null,
             idempotency_key: idempotency_key ?? transaction_hash,
+            status: block ? "confirmed" : "pending",
         })
         .onConflictDoNothing()
         .returning();
@@ -81,7 +66,7 @@ export const privy_webhook = async (req: Request, res: Response) => {
         });
     }
 
-    console.log(`[webhook] recorded deposit ${transaction_hash} of ${amount} for user ${user.id}`);
+    console.log(`[webhook] recorded deposit ${transaction_hash} of ${amount} for wallet ${wallet_id}`);
 
     return res.status(200).json({
         status: "ok",

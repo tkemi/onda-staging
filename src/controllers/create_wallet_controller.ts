@@ -6,6 +6,7 @@ import {register_user} from "../services";
 const bodySchema = z.object({
     privyWallet: z.string().refine(isAddress,{message:"Not a valid address"}),
     privyUserId : z.string().min(1),
+    privyWalletId : z.string().min(1),
 })
 
 export const create_wallet = async (req: Request, res: Response) => {
@@ -19,9 +20,9 @@ export const create_wallet = async (req: Request, res: Response) => {
         });
     }
 
-    const { privyWallet, privyUserId } = validateBody.data
+    const { privyWallet, privyUserId, privyWalletId } = validateBody.data
 
-    const { user } = await register_user(privyUserId, privyWallet)
+    const { user } = await register_user(privyUserId, privyWallet, privyWalletId)
 
     if (!user) {
         return res.status(409).json({
@@ -32,6 +33,6 @@ export const create_wallet = async (req: Request, res: Response) => {
 
     return res.status(200).json({
         status: "ok",
-        address: user.user_address
+        address: user.privy_address
     });
 }

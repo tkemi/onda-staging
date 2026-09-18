@@ -1,5 +1,5 @@
 {
-  "id": "6134a405-474e-4e55-a5a0-39249ae6e6de",
+  "id": "be2e92ed-9a06-4d9b-972c-f15e0da8bff9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -15,9 +15,9 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
+        "privy_wallet_id": {
+          "name": "privy_wallet_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
@@ -65,10 +65,18 @@
         },
         "status": {
           "name": "status",
-          "type": "text",
+          "type": "tx_status",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
-          "default": "'detected'"
+          "default": "'pending'"
+        },
+        "is_sent": {
+          "name": "is_sent",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -108,23 +116,132 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "deposits_sweepable_idx": {
+          "name": "deposits_sweepable_idx",
+          "columns": [
+            {
+              "expression": "is_sent",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "privy_wallet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
-      "foreignKeys": {
-        "deposits_user_id_users_id_fk": {
-          "name": "deposits_user_id_users_id_fk",
-          "tableFrom": "deposits",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sweeps": {
+      "name": "sweeps",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "privy_wallet_id": {
+          "name": "privy_wallet_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset": {
+          "name": "asset",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chain_caip2": {
+          "name": "chain_caip2",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tx_hash": {
+          "name": "tx_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "tx_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
+      "indexes": {
+        "sweeps_tx_hash_idx": {
+          "name": "sweeps_tx_hash_idx",
+          "columns": [
+            {
+              "expression": "tx_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sweeps_wallet_idx": {
+          "name": "sweeps_wallet_idx",
+          "columns": [
+            {
+              "expression": "privy_wallet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -137,31 +254,18 @@
       "columns": {
         "id": {
           "name": "id",
-          "type": "uuid",
+          "type": "text",
           "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
+          "notNull": true
         },
-        "privy_user_id": {
-          "name": "privy_user_id",
+        "privy_wallet_id": {
+          "name": "privy_wallet_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
         "privy_address": {
           "name": "privy_address",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_address": {
-          "name": "user_address",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_private_key": {
-          "name": "user_private_key",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -178,11 +282,11 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "users_privy_user_id_unique": {
-          "name": "users_privy_user_id_unique",
+        "users_privy_wallet_id_unique": {
+          "name": "users_privy_wallet_id_unique",
           "nullsNotDistinct": false,
           "columns": [
-            "privy_user_id"
+            "privy_wallet_id"
           ]
         },
         "users_privy_address_unique": {
@@ -191,13 +295,6 @@
           "columns": [
             "privy_address"
           ]
-        },
-        "users_user_address_unique": {
-          "name": "users_user_address_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "user_address"
-          ]
         }
       },
       "policies": {},
@@ -205,7 +302,17 @@
       "isRLSEnabled": false
     }
   },
-  "enums": {},
+  "enums": {
+    "public.tx_status": {
+      "name": "tx_status",
+      "schema": "public",
+      "values": [
+        "pending",
+        "failed",
+        "confirmed"
+      ]
+    }
+  },
   "schemas": {},
   "sequences": {},
   "roles": {},

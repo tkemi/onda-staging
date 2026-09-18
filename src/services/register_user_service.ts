@@ -1,8 +1,6 @@
 import {eq} from "drizzle-orm";
-import {generatePrivateKey, privateKeyToAccount} from "viem/accounts";
 import {db} from "../db";
 import {user, users} from "../db";
-import {encrypt} from "../utils";
 
 export interface register_user_result {
     user?: user;
@@ -11,18 +9,15 @@ export interface register_user_result {
 
 export const register_user = async (
     privy_user_id: string,
-    privy_address: string
+    privy_address: string,
+    privy_wallet_id: string
 ): Promise<register_user_result> => {
-    const private_key = generatePrivateKey();
-    const account = privateKeyToAccount(private_key);
-
     const [created] = await db
         .insert(users)
         .values({
-            privy_user_id: privy_user_id,
+            id: privy_user_id,
+            privy_wallet_id: privy_wallet_id,
             privy_address: privy_address.toLowerCase(),
-            user_private_key: encrypt(private_key),
-            user_address: account.address.toLowerCase(),
         })
         .onConflictDoNothing()
         .returning();
@@ -34,7 +29,7 @@ export const register_user = async (
     const [existing] = await db
         .select()
         .from(users)
-        .where(eq(users.privy_user_id, privy_user_id))
+        .where(eq(users.id, privy_user_id))
         .limit(1);
 
     return {user: existing, created: false};

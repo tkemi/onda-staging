@@ -3,6 +3,7 @@ import {createWriteStream} from "fs";
 import {config} from "dotenv"
 import {
     create_wallet_router,
+    get_deposits_router,
     get_wallet_router,
     privy_webhook_router
 } from "./routes";
@@ -30,6 +31,7 @@ app.use("/api/webhooks", privy_webhook_router);
 
 app.use("/api/create-wallet", create_wallet_router);
 app.use("/api/wallet", get_wallet_router);
+app.use("/api/deposits", get_deposits_router);
 
 app.use((_request: Request, response: Response) => {
     response.status(404).json({status: "error", message: "Route not found"});

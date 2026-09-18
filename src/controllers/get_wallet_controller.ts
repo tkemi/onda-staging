@@ -23,7 +23,7 @@ export const get_wallet = async (req: Request, res: Response) => {
     const { privyWallet } = validateParams.data
 
     const [user] = await db
-        .select({user_address: users.user_address})
+        .select({privy_address: users.privy_address})
         .from(users)
         .where(eq(users.privy_address, privyWallet.toLowerCase()))
         .limit(1);
@@ -37,6 +37,6 @@ export const get_wallet = async (req: Request, res: Response) => {
 
     return res.status(200).json({
         status: "ok",
-        address: user.user_address
+        address: user.privy_address
     });
 }
