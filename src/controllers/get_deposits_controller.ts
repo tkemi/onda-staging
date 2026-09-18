@@ -3,9 +3,10 @@ import {Request, Response} from "express"
 import {db} from "../db"
 import {deposits} from "../db"
 import {desc, eq} from "drizzle-orm";
+import {isAddress} from "viem";
 
 const paramsSchema = z.object({
-    privyWalletId: z.string().min(1),
+    privyWallet: z.string().refine(isAddress,{message:"Not a valid address"}),
 })
 
 export const get_deposits = async (req: Request, res: Response) => {
@@ -19,7 +20,7 @@ export const get_deposits = async (req: Request, res: Response) => {
         });
     }
 
-    const { privyWalletId } = validateParams.data
+    const { privyWallet } = validateParams.data
 
     const user_deposits = await db
         .select({
@@ -32,7 +33,7 @@ export const get_deposits = async (req: Request, res: Response) => {
             status: deposits.status,
         })
         .from(deposits)
-        .where(eq(deposits.privy_wallet_id, privyWalletId))
+        .where(eq(deposits.privy_address, privyWallet.toLowerCase()))
         .orderBy(desc(deposits.created_at));
 
     return res.status(200).json({
