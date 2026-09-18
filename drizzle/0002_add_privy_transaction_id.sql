@@ -1,0 +1,1 @@
+ALTER TABLE "sweeps" ADD COLUMN "privy_transaction_id" text;

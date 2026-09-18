@@ -15,6 +15,13 @@
       "when": 1789727346602,
       "tag": "0001_add_privy_address",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789731613782,
+      "tag": "0002_add_privy_transaction_id",
+      "breakpoints": true
     }
   ]
 }

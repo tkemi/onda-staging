@@ -57,6 +57,7 @@ export const sweeps = pgTable(
         asset: text("asset").notNull(),
         chain_caip2: text("chain_caip2").notNull(),
         amount: numeric("amount", {precision: 78, scale: 0}).notNull(),
+        privy_transaction_id: text("privy_transaction_id"),
         tx_hash: text("tx_hash"),
         status: tx_status("status").notNull().default("pending"),
         error: text("error"),

@@ -7,12 +7,15 @@ import {createPublicClient, encodeFunctionData, erc20Abi, http} from "viem";
 import {arbitrum} from "viem/chains";
 dotenv.config();
 
-export const get_deposits = async (): Promise<deposit[]> => {
+export const MAX_DEPOSITS = 100;
+
+export const get_deposits = async (limit = MAX_DEPOSITS): Promise<deposit[]> => {
     return db
         .select()
         .from(deposits)
         .where(and(eq(deposits.is_sent, false), eq(deposits.status, "confirmed")))
-        .orderBy(asc(deposits.created_at));
+        .orderBy(asc(deposits.created_at))
+        .limit(limit);
 };
 
 export interface grouped_deposit {
@@ -42,13 +45,60 @@ export const group_deposits = (rows: deposit[]): grouped_deposit[] => {
     return [...grouped.values()];
 };
 
-export const get_usdc_balance = async (privy_address: string): Promise<bigint> => {
-    return public_client.readContract({
-        address: USDC,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [privy_address as `0x${string}`],
+const TERMINAL_OK = ["confirmed", "finalized"];
+const TERMINAL_BAD = ["execution_reverted", "failed", "provider_error", "replaced"];
+
+export interface tx_outcome {
+    ok: boolean;
+    hash: string | null;
+    status: string;
+}
+
+export const wait_for_tx = async (transaction_id: string): Promise<tx_outcome> => {
+    const deadline = Date.now() + 180_000;
+
+    while (Date.now() < deadline) {
+        const transaction = await privy.transactions().get(transaction_id);
+
+        if (TERMINAL_OK.includes(transaction.status)) {
+            return {ok: true, hash: transaction.transaction_hash, status: transaction.status};
+        }
+
+        if (TERMINAL_BAD.includes(transaction.status)) {
+            return {ok: false, hash: transaction.transaction_hash, status: transaction.status};
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+
+    return {ok: false, hash: null, status: "timeout"};
+};
+
+export const get_usdc_balances = async (addresses: string[]): Promise<Map<string, bigint>> => {
+    if (addresses.length === 0) {
+        return new Map();
+    }
+
+    const results = await public_client.multicall({
+        contracts: addresses.map((address) => ({
+            address: USDC,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [address as `0x${string}`],
+        })),
     });
+
+    return new Map(addresses.map((address, i) => {
+        const result = results[i];
+
+        if (!result || result.status !== "success") {
+            console.error(`[sweeper] balance read failed for ${address}`);
+
+            return [address, 0n] as const;
+        }
+
+        return [address, result.result as bigint] as const;
+    }));
 };
 
 const privy = new PrivyClient({
@@ -73,11 +123,21 @@ const MIN_AMOUNT = 5n * 10n ** USDC_DECIMALS;
 
 export const sendTx = async () => {
 
-    const rows = await get_deposits();
+    const groups = group_deposits(await get_deposits());
 
-    for (const group of group_deposits(rows)) {
+    if (groups.length === 0) {
+        console.log("[sweeper] nothing to sweep");
 
-        const balance = await get_usdc_balance(group.privy_address);
+        return;
+    }
+
+    const balances = await get_usdc_balances(groups.map((group) => group.privy_address));
+
+    console.log(`[sweeper] checking ${groups.length} wallets`);
+
+    for (const group of groups) {
+
+        const balance = balances.get(group.privy_address) ?? 0n;
 
         if (balance < MIN_AMOUNT) {
             console.log(`[sweeper] skipping ${group.privy_address}: balance ${balance} under ${MIN_AMOUNT}`);
@@ -111,27 +171,29 @@ export const sendTx = async () => {
 
             await db
                 .update(sweeps)
-                .set({tx_hash: tx.hash})
+                .set({privy_transaction_id: tx.transaction_id ?? null, tx_hash: tx.hash || null})
                 .where(eq(sweeps.id, sweep!.id));
 
-            const receipt = await public_client.waitForTransactionReceipt({
-                hash: tx.hash as `0x${string}`,
-            });
+            if (!tx.transaction_id) {
+                throw new Error(`privy returned no transaction_id (hash "${tx.hash}")`);
+            }
 
-            if (receipt.status !== "success") {
+            const outcome = await wait_for_tx(tx.transaction_id);
+
+            if (!outcome.ok) {
                 await db
                     .update(sweeps)
-                    .set({status: "failed", error: "transaction reverted"})
+                    .set({status: "failed", tx_hash: outcome.hash, error: `privy status: ${outcome.status}`})
                     .where(eq(sweeps.id, sweep!.id));
 
-                console.error(`[sweeper] reverted for ${group.privy_wallet_id}: ${tx.hash}`);
+                console.error(`[sweeper] ${outcome.status} for ${group.privy_wallet_id}: ${outcome.hash}`);
 
                 continue;
             }
 
             await db
                 .update(sweeps)
-                .set({status: "confirmed"})
+                .set({status: "confirmed", tx_hash: outcome.hash})
                 .where(eq(sweeps.id, sweep!.id));
 
             await db
@@ -139,7 +201,7 @@ export const sendTx = async () => {
                 .set({is_sent: true})
                 .where(inArray(deposits.id, group.deposit_ids));
 
-            console.log(`[sweeper] swept ${balance} for ${group.privy_wallet_id}: ${tx.hash}`);
+            console.log(`[sweeper] swept ${balance} for ${group.privy_wallet_id}: ${outcome.hash}`);
         } catch (error: unknown) {
             const reason = error instanceof Error ? error.message : String(error);
 
