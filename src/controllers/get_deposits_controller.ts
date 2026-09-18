@@ -22,7 +22,14 @@ export const get_deposits = async (req: Request, res: Response) => {
     const { privyWalletId } = validateParams.data
 
     const user_deposits = await db
-        .select()
+        .select({
+            id: deposits.id,
+            privy_wallet_id: deposits.privy_wallet_id,
+            amount: deposits.amount,
+            tx_hash: deposits.tx_hash,
+            sender: deposits.sender,
+            status: deposits.status,
+        })
         .from(deposits)
         .where(eq(deposits.privy_wallet_id, privyWalletId))
         .orderBy(desc(deposits.created_at));
