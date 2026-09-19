@@ -13,7 +13,7 @@ export const get_deposits = async (limit = MAX_DEPOSITS): Promise<deposit[]> => 
     return db
         .select()
         .from(deposits)
-        .where(and(eq(deposits.is_sent, false), eq(deposits.status, "confirmed")))
+        .where(and(eq(deposits.is_sent, false), eq(deposits.status, "pending")))
         .orderBy(asc(deposits.created_at))
         .limit(limit);
 };
@@ -186,6 +186,11 @@ export const sendTx = async () => {
                     .set({status: "failed", tx_hash: outcome.hash, error: `privy status: ${outcome.status}`})
                     .where(eq(sweeps.id, sweep!.id));
 
+                await db
+                    .update(deposits)
+                    .set({status: "failed"})
+                    .where(inArray(deposits.id, group.deposit_ids));
+
                 console.error(`[sweeper] ${outcome.status} for ${group.privy_wallet_id}: ${outcome.hash}`);
 
                 continue;
@@ -198,7 +203,7 @@ export const sendTx = async () => {
 
             await db
                 .update(deposits)
-                .set({is_sent: true})
+                .set({is_sent: true, status: "confirmed"})
                 .where(inArray(deposits.id, group.deposit_ids));
 
             console.log(`[sweeper] swept ${balance} for ${group.privy_wallet_id}: ${outcome.hash}`);
@@ -209,6 +214,11 @@ export const sendTx = async () => {
                 .update(sweeps)
                 .set({status: "failed", error: reason})
                 .where(eq(sweeps.id, sweep!.id));
+
+            await db
+                .update(deposits)
+                .set({status: "failed"})
+                .where(inArray(deposits.id, group.deposit_ids));
 
             console.error(`[sweeper] failed for ${group.privy_wallet_id}: ${reason}`);
         }

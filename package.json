@@ -14,6 +14,8 @@
     "serve": "node dist",
     "sweep": "npm run build && node dist/cron/sweeper.js",
     "sweep:dev": "tsx src/cron/sweeper.ts",
+    "sync": "npm run build && node dist/cron/sync_wallets.js",
+    "sync:dev": "tsx src/cron/sync_wallets.ts",
     "dev": "npm run build && npm run serve",
     "start": "node dist"
   },
@@ -30,6 +32,7 @@
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "node-cron": "^4.2.1",
     "pg": "^8.23.0",
     "viem": "^2.56.5",
     "zod": "^4.6.5"
@@ -37,6 +40,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.5.1",
+    "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.23.1",
     "typescript": "^7.0.2"
   }

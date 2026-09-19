@@ -5,8 +5,10 @@ import {
     create_wallet_router,
     get_deposits_router,
     get_wallet_router,
-    privy_webhook_router
+    quicknode_webhook_router
 } from "./routes";
+import cron from "node-cron";
+import {sync_wallets} from "./cron/sync_wallets";
 import {check_db_connection, close_db} from "./db";
 import {is_db_connection_error} from "./utils";
 
@@ -25,9 +27,13 @@ app.use((request: Request, _response: Response, next: NextFunction) => {
     next();
 });
 
-app.use(express.json());
+app.use(express.json({
+    verify: (request: Request, _response: Response, buffer: Buffer) => {
+        (request as any).rawBody = buffer;
+    },
+}));
 
-app.use("/api/webhooks", privy_webhook_router);
+app.use("/api/webhooks", quicknode_webhook_router);
 
 app.use("/api/create-wallet", create_wallet_router);
 app.use("/api/wallet", get_wallet_router);
@@ -67,8 +73,19 @@ check_db_connection()
             console.log(`🚀  Running on the ${port} port.`);
         });
 
+        const sync_schedule = process.env.SYNC_WALLETS_CRON ?? "*/30 * * * *";
+
+        const sync_task = cron.schedule(sync_schedule, () => {
+            void sync_wallets().catch((error: unknown) => {
+                console.error("[sync] scheduled run failed:", error);
+            });
+        });
+
+        console.log(`[sync] watch list sync scheduled: ${sync_schedule}`);
+
         const shutdown = (signal: string) => {
             console.log(`[shutdown] received ${signal}`);
+            void sync_task.stop();
             server.close(() => {
                 void close_db().then(() => process.exit(0));
             });

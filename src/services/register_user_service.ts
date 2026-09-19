@@ -1,6 +1,7 @@
 import {eq} from "drizzle-orm";
 import {db} from "../db";
 import {user, users} from "../db";
+import {watch_address} from "./quicknode_service";
 
 export interface register_user_result {
     user?: user;
@@ -23,6 +24,8 @@ export const register_user = async (
         .returning();
 
     if (created) {
+        await watch_address(created.privy_address);
+
         return {user: created, created: true};
     }
 
