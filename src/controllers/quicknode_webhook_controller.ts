@@ -117,20 +117,27 @@ export const quicknode_webhook = async (req: Request, res: Response) => {
             log.address.toLowerCase() === USDC &&
             log.topics[0]?.toLowerCase() === TRANSFER_TOPIC
         )
-        .map((log) => {
-            const decoded = decodeEventLog({
-                abi: [TRANSFER_EVENT],
-                topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
-                data: log.data as `0x${string}`,
-            })
+        .flatMap((log) => {
+            try {
+                const decoded = decodeEventLog({
+                    abi: [TRANSFER_EVENT],
+                    topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+                    data: log.data as `0x${string}`,
+                })
 
-            return {
-                from: decoded.args.from.toLowerCase(),
-                to: decoded.args.to.toLowerCase(),
-                value: decoded.args.value.toString(),
-                tx_hash: log.transactionHash,
-                block_number: String(Number(log.blockNumber)),
-                log_index: Number(log.logIndex),
+                return [{
+                    from: decoded.args.from.toLowerCase(),
+                    to: decoded.args.to.toLowerCase(),
+                    value: decoded.args.value.toString(),
+                    tx_hash: log.transactionHash,
+                    block_number: String(Number(log.blockNumber)),
+                    log_index: Number(log.logIndex),
+                }]
+            } catch (error: unknown) {
+                // a log we cannot decode is never going to decode, so skip it rather than fail the delivery
+                console.error(`[quicknode] cannot decode log in ${log.transactionHash}:`, error)
+
+                return []
             }
         })
 

@@ -28,6 +28,8 @@ app.use((request: Request, _response: Response, next: NextFunction) => {
 });
 
 app.use(express.json({
+    // a quicknode block-with-receipts delivery is a few hundred KB, well past the 100kb default
+    limit: process.env.JSON_BODY_LIMIT ?? "10mb",
     verify: (request: Request, _response: Response, buffer: Buffer) => {
         (request as any).rawBody = buffer;
     },
