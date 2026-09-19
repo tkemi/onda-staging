@@ -1,0 +1,12 @@
+{
+  "cron": [
+    {
+      "command": "node dist/cron/sweeper.js",
+      "schedule": "* * * * *"
+    },
+    {
+      "command": "node dist/cron/sync_wallets.js",
+      "schedule": "*/30 * * * *"
+    }
+  ]
+}

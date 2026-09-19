@@ -1,4 +1,4 @@
-import {and, asc, eq, inArray} from "drizzle-orm";
+import {and, asc, eq, inArray, sql} from "drizzle-orm";
 import {close_db, db} from "../db";
 import {deposit, deposits, sweeps} from "../db";
 import dotenv from "dotenv";
@@ -8,6 +8,9 @@ import {arbitrum} from "viem/chains";
 dotenv.config();
 
 export const MAX_DEPOSITS = 100;
+
+// one arbitrary but stable key, so two sweeps can never run against the same database
+const SWEEP_LOCK_KEY = 728411;
 
 export const get_deposits = async (limit = MAX_DEPOSITS): Promise<deposit[]> => {
     return db
@@ -122,6 +125,26 @@ const USDC_DECIMALS = 6n;
 const MIN_AMOUNT = 5n * 10n ** USDC_DECIMALS;
 
 export const sendTx = async () => {
+
+    // pg_try_advisory_lock returns immediately: either we hold the lock or someone else does.
+    // it is held by this connection, so a crashed sweep releases it when the connection drops.
+    const lock = await db.execute(sql`select pg_try_advisory_lock(${SWEEP_LOCK_KEY}) as locked`);
+    const locked = (lock.rows[0] as {locked: boolean} | undefined)?.locked;
+
+    if (!locked) {
+        console.log("[sweeper] another sweep is already running, skipping this round");
+
+        return;
+    }
+
+    try {
+        await run_sweep();
+    } finally {
+        await db.execute(sql`select pg_advisory_unlock(${SWEEP_LOCK_KEY})`);
+    }
+};
+
+const run_sweep = async () => {
 
     const groups = group_deposits(await get_deposits());
 

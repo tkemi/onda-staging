@@ -7,8 +7,6 @@ import {
     get_wallet_router,
     quicknode_webhook_router
 } from "./routes";
-import cron from "node-cron";
-import {sync_wallets} from "./cron/sync_wallets";
 import {check_db_connection, close_db} from "./db";
 import {is_db_connection_error} from "./utils";
 
@@ -75,19 +73,8 @@ check_db_connection()
             console.log(`🚀  Running on the ${port} port.`);
         });
 
-        const sync_schedule = process.env.SYNC_WALLETS_CRON ?? "*/30 * * * *";
-
-        const sync_task = cron.schedule(sync_schedule, () => {
-            void sync_wallets().catch((error: unknown) => {
-                console.error("[sync] scheduled run failed:", error);
-            });
-        });
-
-        console.log(`[sync] watch list sync scheduled: ${sync_schedule}`);
-
         const shutdown = (signal: string) => {
             console.log(`[shutdown] received ${signal}`);
-            void sync_task.stop();
             server.close(() => {
                 void close_db().then(() => process.exit(0));
             });
