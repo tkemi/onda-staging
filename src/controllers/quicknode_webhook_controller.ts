@@ -59,14 +59,9 @@ export const verify_signature = (
     raw_body: string,
     nonce: string,
     timestamp: string,
-    signature: string
+    signature: string,
+    security_token: string
 ): boolean => {
-    const security_token = process.env.QUICKNODE_SECURITY_TOKEN
-
-    if (!security_token) {
-        throw new Error("QUICKNODE_SECURITY_TOKEN is required")
-    }
-
     const computed = createHmac("sha256", Buffer.from(security_token))
         .update(Buffer.from(nonce + timestamp + raw_body))
         .digest("hex")
@@ -87,17 +82,28 @@ export const quicknode_webhook = async (req: Request, res: Response) => {
     const timestamp = req.header("x-qn-timestamp")
     const signature = req.header("x-qn-signature")
     const raw_body = (req as any).rawBody as Buffer | undefined
+    const security_token = process.env.QUICKNODE_SECURITY_TOKEN
 
-    if (!nonce || !timestamp || !signature || !raw_body) {
-        console.error("[quicknode] missing signature headers")
+    if (!security_token) {
+        console.error("[quicknode] QUICKNODE_SECURITY_TOKEN is not set, cannot verify delivery")
 
-        return res.status(401).json({
+        return res.status(503).json({
             status: "error",
-            message: "Missing signature headers",
+            message: "Webhook not configured",
         });
     }
 
-    if (!verify_signature(raw_body.toString("utf8"), nonce, timestamp, signature)) {
+    // an unsigned request is quicknode probing the destination, so acknowledge without recording anything
+    if (!nonce || !timestamp || !signature || !raw_body) {
+        console.log("[quicknode] unsigned request, nothing recorded")
+
+        return res.status(200).json({
+            status: "ok",
+            handled: 0,
+        });
+    }
+
+    if (!verify_signature(raw_body.toString("utf8"), nonce, timestamp, signature, security_token)) {
         console.error("[quicknode] invalid signature")
 
         return res.status(401).json({
