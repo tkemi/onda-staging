@@ -22,12 +22,22 @@ export const create_wallet = async (req: Request, res: Response) => {
 
     const { privyWallet, privyUserId, privyWalletId } = validateBody.data
 
-    const { user } = await register_user(privyUserId, privyWallet, privyWalletId)
+    const { user, watched } = await register_user(privyUserId, privyWallet, privyWalletId)
 
     if (!user) {
         return res.status(409).json({
             status: "error",
             message: "This Privy wallet is already registered to another user",
+        });
+    }
+
+    if (watched === false) {
+        console.error(`[create_wallet] ${user.privy_address} is registered but not watched by quicknode`);
+
+        return res.status(502).json({
+            status: "error",
+            message: "Wallet registered but deposit tracking failed, please retry",
+            address: user.privy_address,
         });
     }
 

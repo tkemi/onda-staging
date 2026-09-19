@@ -6,6 +6,7 @@ import {watch_address} from "./quicknode_service";
 export interface register_user_result {
     user?: user;
     created: boolean;
+    watched?: boolean;
 }
 
 export const register_user = async (
@@ -24,9 +25,9 @@ export const register_user = async (
         .returning();
 
     if (created) {
-        await watch_address(created.privy_address);
+        const watched = await watch_address(created.privy_address);
 
-        return {user: created, created: true};
+        return {user: created, created: true, watched: watched};
     }
 
     const [existing] = await db

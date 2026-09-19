@@ -12,7 +12,7 @@ const get_config = (): {api_key: string; list_key: string} | null => {
     return {api_key: api_key, list_key: list_key};
 };
 
-export const watch_address = async (privy_address: string): Promise<boolean> => {
+export const watch_address = async (privy_address: string, attempts = 3): Promise<boolean> => {
     const config = get_config();
 
     if (!config) {
@@ -21,24 +21,34 @@ export const watch_address = async (privy_address: string): Promise<boolean> => 
         return false;
     }
 
-    const response = await fetch(`${KV_BASE}/${config.list_key}/items`, {
-        method: "POST",
-        headers: {
-            "x-api-key": config.api_key,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({item: privy_address.toLowerCase()}),
-    });
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            const response = await fetch(`${KV_BASE}/${config.list_key}/items`, {
+                method: "POST",
+                headers: {
+                    "x-api-key": config.api_key,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({item: privy_address.toLowerCase()}),
+            });
 
-    if (!response.ok) {
-        console.error(`[quicknode] failed to watch ${privy_address}: ${response.status} ${await response.text()}`);
+            if (response.ok) {
+                console.log(`[quicknode] watching ${privy_address}`);
 
-        return false;
+                return true;
+            }
+
+            console.error(`[quicknode] attempt ${attempt}/${attempts} for ${privy_address}: ${response.status} ${await response.text()}`);
+        } catch (error: unknown) {
+            console.error(`[quicknode] attempt ${attempt}/${attempts} for ${privy_address}:`, error);
+        }
+
+        if (attempt < attempts) {
+            await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+        }
     }
 
-    console.log(`[quicknode] watching ${privy_address}`);
-
-    return true;
+    return false;
 };
 
 export const get_watched_addresses = async (): Promise<string[]> => {
@@ -60,9 +70,9 @@ export const get_watched_addresses = async (): Promise<string[]> => {
         throw new Error(`[quicknode] cannot read list: ${response.status} ${await response.text()}`);
     }
 
-    const body = await response.json() as {items?: string[]};
+    const body = await response.json() as {data?: {items?: string[] | null}};
 
-    return (body.items ?? []).map((item) => item.toLowerCase());
+    return (body.data?.items ?? []).map((item) => item.toLowerCase());
 };
 
 export const add_watched_addresses = async (addresses: string[]): Promise<number> => {
