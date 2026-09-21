@@ -1,6 +1,7 @@
 import {
     boolean,
     index,
+    integer,
     numeric,
     pgEnum,
     pgTable,
@@ -37,6 +38,7 @@ export const deposits = pgTable(
         idempotency_key: text("idempotency_key").notNull(),
         status: tx_status("status").notNull().default("pending"),
         is_sent: boolean("is_sent").notNull().default(false),
+        attempts: integer("attempts").notNull().default(0),
         created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
     },
     (table) => [

@@ -1,4 +1,4 @@
-import {and, asc, eq, inArray, sql} from "drizzle-orm";
+import {and, asc, eq, inArray, lt, or, sql} from "drizzle-orm";
 import {close_db, db} from "../db";
 import {deposit, deposits, sweeps} from "../db";
 import dotenv from "dotenv";
@@ -12,11 +12,20 @@ export const MAX_DEPOSITS = 100;
 // one arbitrary but stable key, so two sweeps can never run against the same database
 const SWEEP_LOCK_KEY = 728411;
 
+// a failed sweep is retried, because the balance check makes a retry safe: if the
+// transfer actually went through, the wallet is empty and the retry skips it.
+// the cap stops a permanently broken deposit from being retried every minute forever.
+export const MAX_ATTEMPTS = 5;
+
 export const get_deposits = async (limit = MAX_DEPOSITS): Promise<deposit[]> => {
     return db
         .select()
         .from(deposits)
-        .where(and(eq(deposits.is_sent, false), eq(deposits.status, "pending")))
+        .where(and(
+            eq(deposits.is_sent, false),
+            or(eq(deposits.status, "pending"), eq(deposits.status, "failed")),
+            lt(deposits.attempts, MAX_ATTEMPTS)
+        ))
         .orderBy(asc(deposits.created_at))
         .limit(limit);
 };
@@ -167,6 +176,11 @@ const run_sweep = async () => {
 
             continue;
         }
+
+        await db
+            .update(deposits)
+            .set({attempts: sql`${deposits.attempts} + 1`})
+            .where(inArray(deposits.id, group.deposit_ids));
 
         const [sweep] = await db
             .insert(sweeps)
