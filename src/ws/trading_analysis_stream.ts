@@ -1,10 +1,10 @@
 import type {IncomingMessage, Server} from "http";
 import type {Duplex} from "stream";
 import {WebSocket, WebSocketServer, type RawData} from "ws";
-import {db, trading_analysis, type new_trading_analysis_message} from "../db";
+import {db, trading_analysis_stream, type new_trading_analysis_stream_message} from "../db";
 
-// Path partners connect to, e.g. wss://<host>/ws/trading-analysis?token=...
-const WS_PATH = "/ws/trading-analysis";
+// Path partners connect to, e.g. wss://<host>/trading-analysis-stream?token=...
+const WS_PATH = "/trading-analysis-stream";
 
 // How often we ping idle clients; a client that misses a round trip is dropped.
 const HEARTBEAT_MS = 30_000;
@@ -61,9 +61,9 @@ const extract_token = (request: IncomingMessage): string | null => {
     return null;
 };
 
-// The single place processing lives. Today it only records the delivery; once we
-// have seen real data, add parsing / validation / downstream writes here.
-const process_trading_analysis = async (partner: string, raw: string): Promise<void> => {
+// Record a raw partner delivery. This only captures the message; the actual analysis
+// is produced later, off the socket, by the process_trading_analysis cron.
+const store_stream_message = async (partner: string, raw: string): Promise<void> => {
     let payload: unknown = null;
 
     try {
@@ -72,13 +72,13 @@ const process_trading_analysis = async (partner: string, raw: string): Promise<v
         // not JSON (yet) — keep the raw text, leave payload null
     }
 
-    const row: new_trading_analysis_message = {
+    const row: new_trading_analysis_stream_message = {
         partner,
-        payload: payload as new_trading_analysis_message["payload"],
+        payload: payload as new_trading_analysis_stream_message["payload"],
         raw,
     };
 
-    await db.insert(trading_analysis).values(row);
+    await db.insert(trading_analysis_stream).values(row);
 };
 
 interface live_socket extends WebSocket {
@@ -91,7 +91,7 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
 
     if (partner_tokens.size === 0) {
         console.warn(
-            "[ws] TRADING_ANALYSIS_STREAM_TOKEN is not set — the trading-analysis socket will reject every connection"
+            "[ws] TRADING_ANALYSIS_STREAM_TOKEN is not set — the trading-analysis-stream socket will reject every connection"
         );
     }
 
@@ -133,7 +133,7 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
         const ws = raw_ws as live_socket;
         ws.is_alive = true;
 
-        console.log(`[ws] ${ws.partner} connected to trading-analysis`);
+        console.log(`[ws] ${ws.partner} connected to trading-analysis-stream`);
         ws.send(JSON.stringify({type: "connected", partner: ws.partner}));
 
         ws.on("pong", () => {
@@ -143,7 +143,7 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
         ws.on("message", (data: RawData, is_binary: boolean) => {
             const raw = is_binary ? data.toString("base64") : data.toString("utf8");
 
-            void process_trading_analysis(ws.partner, raw)
+            void store_stream_message(ws.partner, raw)
                 .then(() => {
                     ws.send(JSON.stringify({type: "ack"}));
                 })
@@ -158,7 +158,7 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
         });
 
         ws.on("close", () => {
-            console.log(`[ws] ${ws.partner} disconnected from trading-analysis`);
+            console.log(`[ws] ${ws.partner} disconnected from trading-analysis-stream`);
         });
 
         ws.on("error", (error: Error) => {
@@ -186,7 +186,7 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
         clearInterval(heartbeat);
     });
 
-    console.log(`[ws] trading-analysis socket listening on ${WS_PATH}`);
+    console.log(`[ws] trading-analysis-stream socket listening on ${WS_PATH}`);
 
     return wss;
 };

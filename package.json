@@ -16,6 +16,8 @@
     "sweep:dev": "tsx src/cron/sweeper.ts",
     "sync": "npm run build && node dist/cron/sync_wallets.js",
     "sync:dev": "tsx src/cron/sync_wallets.ts",
+    "analysis": "npm run build && node dist/cron/process_trading_analysis.js",
+    "analysis:dev": "tsx src/cron/process_trading_analysis.ts",
     "hl": "tsx src/cron/hl_balance.ts",
     "dev": "npm run build && npm run serve",
     "start": "node dist"

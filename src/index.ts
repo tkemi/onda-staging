@@ -9,7 +9,7 @@ import {
 } from "./routes";
 import {check_db_connection, close_db} from "./db";
 import {is_db_connection_error} from "./utils";
-import {attach_trading_analysis_stream} from "./ws/trading_analysis";
+import {attach_trading_analysis_stream} from "./ws/trading_analysis_stream";
 
 config()
 
