@@ -43,6 +43,13 @@
       "when": 1790332835739,
       "tag": "0005_trading_analysis_split",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790336613381,
+      "tag": "0006_activity_feed",
+      "breakpoints": true
     }
   ]
 }

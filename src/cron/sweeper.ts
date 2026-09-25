@@ -1,10 +1,11 @@
 import {and, asc, eq, inArray, lt, or, sql} from "drizzle-orm";
 import {close_db, db} from "../db";
-import {deposit, deposits, sweeps} from "../db";
+import {activities, deposit, deposits, sweeps, type new_activity} from "../db";
 import dotenv from "dotenv";
 import {PrivyClient} from "@privy-io/node";
 import {createPublicClient, encodeFunctionData, erc20Abi, http} from "viem";
 import {arbitrum} from "viem/chains";
+import {get_token_metadata} from "../services";
 dotenv.config();
 
 export const MAX_DEPOSITS = 100;
@@ -34,6 +35,9 @@ export interface grouped_deposit {
     privy_wallet_id: string;
     privy_address: string;
     deposit_ids: string[];
+    // the rows themselves: the activity feed shows a per-deposit amount and sender,
+    // which the ids alone cannot supply
+    rows: deposit[];
 }
 
 export const group_deposits = (rows: deposit[]): grouped_deposit[] => {
@@ -43,11 +47,13 @@ export const group_deposits = (rows: deposit[]): grouped_deposit[] => {
 
         if (existing) {
             existing.deposit_ids.push(row.id);
+            existing.rows.push(row);
         } else {
             acc.set(key, {
                 privy_wallet_id: row.privy_wallet_id,
                 privy_address: row.privy_address,
                 deposit_ids: [row.id],
+                rows: [row],
             });
         }
 
@@ -153,6 +159,18 @@ export const sendTx = async () => {
     }
 };
 
+// The feed row's status follows the sweep, because the sweep is what actually delivers
+// the money: until it confirms, the deposit is sitting in an intermediate wallet.
+const set_activity_status = async (deposit_ids: string[], status: "confirmed" | "failed") => {
+    await db
+        .update(activities)
+        .set({status: status})
+        .where(and(
+            eq(activities.type, "deposit"),
+            inArray(activities.source_key, deposit_ids)
+        ));
+};
+
 const run_sweep = async () => {
 
     const groups = group_deposits(await get_deposits());
@@ -164,6 +182,17 @@ const run_sweep = async () => {
     }
 
     const balances = await get_usdc_balances(groups.map((group) => group.privy_address));
+
+    // Token metadata comes from whatever the deposits actually reference, never a constant,
+    // so a new token needs no change here. Resolved once per distinct address per run:
+    // symbol and decimals never change for a contract.
+    const assets = [...new Set(
+        groups.flatMap((group) => group.rows.map((row) => row.asset.toLowerCase()))
+    )];
+
+    const token_by_address = new Map(await Promise.all(
+        assets.map(async (asset) => [asset, await get_token_metadata(asset)] as const)
+    ));
 
     console.log(`[sweeper] checking ${groups.length} wallets`);
 
@@ -191,6 +220,32 @@ const run_sweep = async () => {
                 amount: balance.toString(),
             })
             .returning();
+
+        // One feed row per deposit, not per sweep: a sweep empties the whole wallet in a
+        // single transfer, so it has no one sender or amount to show. The deposit supplies
+        // both, the sweep supplies the status. onConflictDoNothing keeps a retried sweep
+        // from inserting a second row for the same deposit.
+        const activity_rows: new_activity[] = group.rows.map((row) => {
+            const token = token_by_address.get(row.asset.toLowerCase())!;
+
+            return {
+                privy_address: row.privy_address,
+                type: "deposit" as const,
+                source_key: row.id,
+                data: {
+                    amount: row.amount,
+                    tokenAddress: row.asset,
+                    tokenSymbol: token.symbol,
+                    tokenDecimals: token.decimals,
+                    txHash: row.tx_hash,
+                    sender: row.sender,
+                },
+                // when the transfer landed on chain, not when we swept it
+                occurred_at: row.created_at,
+            };
+        });
+
+        await db.insert(activities).values(activity_rows).onConflictDoNothing();
 
         try {
             const tx = await privy.wallets().ethereum().sendTransaction(group.privy_wallet_id, {
@@ -228,6 +283,8 @@ const run_sweep = async () => {
                     .set({status: "failed"})
                     .where(inArray(deposits.id, group.deposit_ids));
 
+                await set_activity_status(group.deposit_ids, "failed");
+
                 console.error(`[sweeper] ${outcome.status} for ${group.privy_wallet_id}: ${outcome.hash}`);
 
                 continue;
@@ -243,6 +300,8 @@ const run_sweep = async () => {
                 .set({is_sent: true, status: "confirmed"})
                 .where(inArray(deposits.id, group.deposit_ids));
 
+            await set_activity_status(group.deposit_ids, "confirmed");
+
             console.log(`[sweeper] swept ${balance} for ${group.privy_wallet_id}: ${outcome.hash}`);
         } catch (error: unknown) {
             const reason = error instanceof Error ? error.message : String(error);
@@ -256,6 +315,8 @@ const run_sweep = async () => {
                 .update(deposits)
                 .set({status: "failed"})
                 .where(inArray(deposits.id, group.deposit_ids));
+
+            await set_activity_status(group.deposit_ids, "failed");
 
             console.error(`[sweeper] failed for ${group.privy_wallet_id}: ${reason}`);
         }

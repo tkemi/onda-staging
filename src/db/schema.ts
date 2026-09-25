@@ -127,3 +127,88 @@ export const trading_analysis = pgTable(
 
 export type trading_analysis_result = typeof trading_analysis.$inferSelect;
 export type new_trading_analysis_result = typeof trading_analysis.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Activity feed
+// ---------------------------------------------------------------------------
+//
+// One table for every kind of user-visible event. The feed will span wildly
+// different things - an on-chain deposit, a card purchase, a perp fill, a
+// liquidation - that share almost no fields, so only what the feed itself needs
+// to sort, page and update is a real column. Everything specific to the event
+// kind goes in `data`, shaped per type by activity_data_by_type below.
+//
+// Adding a type is: one enum value, one entry in activity_data_by_type, one
+// formatter. No migration.
+//
+// `privy_address` holds a LOWERCASE 0x address. There is no foreign key to
+// `users`, matching deposits/sweeps: the ingest paths must not depend on a
+// user lookup succeeding.
+
+export const activity_type = pgEnum("activity_type", ["deposit"]);
+
+// What lives in `data`, per activity type.
+//
+// These are camelCase, unlike every other column in this file, and deliberately so:
+// they are stored under the exact names the frontend reads, so serving the feed is a
+// spread of `data` with no mapping layer in between. Operational fields
+// stay in the table that owns them - a deposit's chain_caip2, block_number, attempts
+// and idempotency_key live in `deposits`, which is still the source of truth for the
+// webhook and the sweeper. The feed is a view for the UI, not a second ledger.
+//
+// Amounts are ALWAYS strings. JSON numbers are IEEE-754 doubles, so an 18-decimal
+// token amount would silently lose precision the moment it round-trips through
+// jsonb - "5000000" is the exact digits, on-chain base units, and the client
+// divides by tokenDecimals to display it.
+//
+// The token fields are snapshotted per row, not looked up on read. token_address is
+// whatever the Transfer log was emitted by, so a new token needs no code change. An
+// ERC-20 Transfer log does not carry symbol or decimals, so those are read from the
+// contract once per token when the deposit is recorded - see the webhook controller.
+export interface deposit_activity_data {
+    amount: string;
+    tokenAddress: string;
+    tokenSymbol: string;
+    tokenDecimals: number;
+    txHash: string;
+    sender: string | null;
+}
+
+// Keyed by the enum so the two cannot drift: a new activity_type has no valid
+// `data` shape until it is added here.
+export interface activity_data_by_type {
+    deposit: deposit_activity_data;
+}
+
+export type activity_data = activity_data_by_type[keyof activity_data_by_type];
+
+export const activities = pgTable(
+    "activities",
+    {
+        id: uuid("id").primaryKey().defaultRandom(),
+        privy_address: text("privy_address").notNull(),
+        type: activity_type("type").notNull(),
+        // status stays a real column, not a `data` field: it is the one thing that
+        // changes after insert, and updating it should not mean rewriting the blob
+        status: tx_status("status").notNull().default("pending"),
+        // the source event's own id - deposits.id for a deposit. Unique per type, so
+        // replaying a webhook or a backfill cannot create a second feed row, and the
+        // writer can find this row later to move `status` along.
+        source_key: text("source_key").notNull(),
+        // everything specific to this event kind
+        data: jsonb("data").$type<activity_data>().notNull(),
+        // when the event HAPPENED, not when we recorded it. A card settlement or a
+        // fill predates our insert, and the feed must be ordered by event time.
+        occurred_at: timestamp("occurred_at", {withTimezone: true}).notNull(),
+        created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        // the one index the feed reads: a user's page, newest first. `id` is the
+        // tiebreaker so a keyset cursor stays stable when timestamps collide.
+        index("activities_feed_idx").on(table.privy_address, table.occurred_at.desc(), table.id.desc()),
+        uniqueIndex("activities_source_key").on(table.type, table.source_key),
+    ]
+);
+
+export type activity = typeof activities.$inferSelect;
+export type new_activity = typeof activities.$inferInsert;
