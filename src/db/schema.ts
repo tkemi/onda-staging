@@ -2,6 +2,7 @@ import {
     boolean,
     index,
     integer,
+    jsonb,
     numeric,
     pgEnum,
     pgTable,
@@ -73,3 +74,29 @@ export const sweeps = pgTable(
 
 export type sweep = typeof sweeps.$inferSelect;
 export type new_sweep = typeof sweeps.$inferInsert;
+
+// Raw, append-only capture of everything partners stream over the trading-analysis
+// websocket. We store deliveries untouched so no data is lost before we know the
+// shape; processing logic reads from here later. See src/ws/trading_analysis.ts.
+export const trading_analysis = pgTable(
+    "trading_analysis",
+    {
+        id: uuid("id").primaryKey().defaultRandom(),
+        // which partner sent this, derived from the token used to connect
+        partner: text("partner").notNull(),
+        // the parsed message when it was valid JSON, otherwise null
+        payload: jsonb("payload"),
+        // the exact bytes we received, always kept as a fallback / audit trail
+        raw: text("raw").notNull(),
+        // false until process_trading_analysis has handled it (for future backfills)
+        is_processed: boolean("is_processed").notNull().default(false),
+        received_at: timestamp("received_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        index("trading_analysis_partner_idx").on(table.partner),
+        index("trading_analysis_unprocessed_idx").on(table.is_processed, table.received_at),
+    ]
+);
+
+export type trading_analysis_message = typeof trading_analysis.$inferSelect;
+export type new_trading_analysis_message = typeof trading_analysis.$inferInsert;

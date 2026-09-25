@@ -9,6 +9,7 @@ import {
 } from "./routes";
 import {check_db_connection, close_db} from "./db";
 import {is_db_connection_error} from "./utils";
+import {attach_trading_analysis_stream} from "./ws/trading_analysis";
 
 config()
 
@@ -73,8 +74,11 @@ check_db_connection()
             console.log(`🚀  Running on the ${port} port.`);
         });
 
+        const trading_analysis_ws = attach_trading_analysis_stream(server);
+
         const shutdown = (signal: string) => {
             console.log(`[shutdown] received ${signal}`);
+            trading_analysis_ws.close();
             server.close(() => {
                 void close_db().then(() => process.exit(0));
             });
