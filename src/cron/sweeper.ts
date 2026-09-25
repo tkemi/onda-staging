@@ -166,7 +166,7 @@ const set_activity_status = async (deposit_ids: string[], status: "confirmed" | 
         .update(activities)
         .set({status: status})
         .where(and(
-            eq(activities.type, "deposit"),
+            eq(activities.type, "deposit-on-chain"),
             inArray(activities.source_key, deposit_ids)
         ));
 };
@@ -230,14 +230,14 @@ const run_sweep = async () => {
 
             return {
                 privy_address: row.privy_address,
-                type: "deposit" as const,
+                type: "deposit-on-chain" as const,
                 source_key: row.id,
                 data: {
-                    amount: row.amount,
-                    tokenAddress: row.asset,
-                    tokenSymbol: token.symbol,
-                    tokenDecimals: token.decimals,
-                    txHash: row.tx_hash,
+                    amount_wei: row.amount,
+                    token_address: row.asset,
+                    token_symbol: token.symbol,
+                    token_decimals: token.decimals,
+                    tx_hash: row.tx_hash,
                     sender: row.sender,
                 },
                 // when the transfer landed on chain, not when we swept it

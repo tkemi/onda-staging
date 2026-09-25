@@ -17,30 +17,32 @@ export interface activity_filter {
 
 // --- the response contract -------------------------------------------------
 
-const base_transaction = z.object({
+const base_activity = z.object({
     id: z.string(),
     status: z.enum(["pending", "failed", "confirmed"]),
-    amount: z.string(),
-    tokenAddress: z.string(),
-    tokenDecimals: z.number().int(),
-    tokenSymbol: z.string(),
-    createdAt: z.string(),
-    txHash: z.string(),
+    amount_wei: z.string(),
+    token_address: z.string(),
+    token_decimals: z.number().int(),
+    token_symbol: z.string(),
+    // epoch milliseconds, not an ISO string: a number the client can hand straight to
+    // new Date() or compare without parsing
+    created_at: z.number().int(),
+    tx_hash: z.string(),
     sender: z.string().nullable(),
 });
 
 // A discriminated union, not one flat object: the next types (card on-ramp, trade,
 // liquidation) carry completely different fields, and the client switches on `type`.
-export const transaction_schema = z.discriminatedUnion("type", [
-    base_transaction.extend({type: z.literal("deposit")}),
+export const activity_schema = z.discriminatedUnion("type", [
+    base_activity.extend({type: z.literal("deposit-on-chain")}),
 ]);
 
 export const activity_response_schema = z.object({
     status: z.literal("ok"),
-    transactions: z.array(transaction_schema),
+    activities: z.array(activity_schema),
 });
 
-export type transaction = z.infer<typeof transaction_schema>;
+export type activity_item = z.infer<typeof activity_schema>;
 export type activity_response = z.infer<typeof activity_response_schema>;
 
 // --- reading ---------------------------------------------------------------
@@ -48,18 +50,18 @@ export type activity_response = z.infer<typeof activity_response_schema>;
 // No per-field mapping: `data` is stored under the names the frontend reads, so a row
 // becomes a response item by spreading it over the four columns the feed owns. A new
 // activity type needs nothing here - whatever its `data` holds is what it serves.
-export const to_transaction = (row: activity): transaction => ({
+export const to_activity_item = (row: activity): activity_item => ({
     id: row.id,
     type: row.type,
     status: row.status,
-    createdAt: row.occurred_at.toISOString(),
+    created_at: row.occurred_at.getTime(),
     ...row.data,
 });
 
 export const get_activity = async (
     privy_address: string,
     filter: activity_filter = {}
-): Promise<transaction[]> => {
+): Promise<activity_item[]> => {
     // Optional filters in drizzle are a list of conditions spread into and(): push the
     // ones that apply, skip the ones that do not. No string building, and each push is
     // type-checked against the column it compares.
@@ -78,5 +80,5 @@ export const get_activity = async (
         .where(and(...conditions))
         .orderBy(desc(activities.occurred_at), desc(activities.id));
 
-    return rows.map(to_transaction);
+    return rows.map(to_activity_item);
 };

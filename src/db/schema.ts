@@ -145,12 +145,11 @@ export type new_trading_analysis_result = typeof trading_analysis.$inferInsert;
 // `users`, matching deposits/sweeps: the ingest paths must not depend on a
 // user lookup succeeding.
 
-export const activity_type = pgEnum("activity_type", ["deposit"]);
+export const activity_type = pgEnum("activity_type", ["deposit-on-chain"]);
 
 // What lives in `data`, per activity type.
 //
-// These are camelCase, unlike every other column in this file, and deliberately so:
-// they are stored under the exact names the frontend reads, so serving the feed is a
+// These are stored under the exact names the frontend reads, so serving the feed is a
 // spread of `data` with no mapping layer in between. Operational fields
 // stay in the table that owns them - a deposit's chain_caip2, block_number, attempts
 // and idempotency_key live in `deposits`, which is still the source of truth for the
@@ -158,26 +157,27 @@ export const activity_type = pgEnum("activity_type", ["deposit"]);
 //
 // Amounts are ALWAYS strings. JSON numbers are IEEE-754 doubles, so an 18-decimal
 // token amount would silently lose precision the moment it round-trips through
-// jsonb - "5000000" is the exact digits, on-chain base units, and the client
-// divides by tokenDecimals to display it.
+// jsonb - "5000000" is the exact digits, in the token's smallest unit, and the
+// client divides by token_decimals to display it. Hence the _wei suffix: it is a
+// reminder at every call site that this is never a display value.
 //
 // The token fields are snapshotted per row, not looked up on read. token_address is
 // whatever the Transfer log was emitted by, so a new token needs no code change. An
 // ERC-20 Transfer log does not carry symbol or decimals, so those are read from the
 // contract once per token when the deposit is recorded - see the webhook controller.
 export interface deposit_activity_data {
-    amount: string;
-    tokenAddress: string;
-    tokenSymbol: string;
-    tokenDecimals: number;
-    txHash: string;
+    amount_wei: string;
+    token_address: string;
+    token_symbol: string;
+    token_decimals: number;
+    tx_hash: string;
     sender: string | null;
 }
 
 // Keyed by the enum so the two cannot drift: a new activity_type has no valid
 // `data` shape until it is added here.
 export interface activity_data_by_type {
-    deposit: deposit_activity_data;
+    "deposit-on-chain": deposit_activity_data;
 }
 
 export type activity_data = activity_data_by_type[keyof activity_data_by_type];

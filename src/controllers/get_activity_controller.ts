@@ -36,10 +36,10 @@ export const get_activity_feed = async (req: Request, res: Response) => {
     const { privyWallet } = validateParams.data
     const { type } = validateQuery.data
 
-    const transactions = await get_activity(privyWallet, {type: type})
+    const activities = await get_activity(privyWallet, {type: type})
 
     return res.status(200).json({
         status: "ok",
-        transactions: transactions,
+        activities: activities,
     });
 }
