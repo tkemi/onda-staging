@@ -34,7 +34,7 @@ export const get_deposits = async (limit = MAX_DEPOSITS): Promise<deposit[]> => 
 export interface grouped_deposit {
     privy_wallet_id: string;
     privy_address: string;
-    deposit_ids: string[];
+    deposit_ids: number[];
     // the rows themselves: the activity feed shows a per-deposit amount and sender,
     // which the ids alone cannot supply
     rows: deposit[];
@@ -161,13 +161,15 @@ export const sendTx = async () => {
 
 // The feed row's status follows the sweep, because the sweep is what actually delivers
 // the money: until it confirms, the deposit is sitting in an intermediate wallet.
-const set_activity_status = async (deposit_ids: string[], status: "confirmed" | "failed") => {
+const set_activity_status = async (deposit_ids: number[], status: "confirmed" | "failed") => {
     await db
         .update(activities)
         .set({status: status})
         .where(and(
             eq(activities.type, "deposit-on-chain"),
-            inArray(activities.source_key, deposit_ids)
+            // source_key is a generic text key across activity types, so a deposit's
+            // numeric id is stored and matched as its string form
+            inArray(activities.source_key, deposit_ids.map(String))
         ));
 };
 
@@ -231,7 +233,7 @@ const run_sweep = async () => {
             return {
                 privy_address: row.privy_address,
                 type: "deposit-on-chain" as const,
-                source_key: row.id,
+                source_key: row.id.toString(),
                 data: {
                     amount_wei: row.amount,
                     token_address: row.asset,

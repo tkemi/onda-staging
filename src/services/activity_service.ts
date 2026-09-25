@@ -51,7 +51,8 @@ export type activity_response = z.infer<typeof activity_response_schema>;
 // becomes a response item by spreading it over the four columns the feed owns. A new
 // activity type needs nothing here - whatever its `data` holds is what it serves.
 export const to_activity_item = (row: activity): activity_item => ({
-    id: row.id,
+    // the id column is a numeric auto-increment; the feed contract keeps it a string
+    id: row.id.toString(),
     type: row.type,
     status: row.status,
     created_at: row.occurred_at.getTime(),

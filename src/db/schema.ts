@@ -6,10 +6,10 @@ import {
     numeric,
     pgEnum,
     pgTable,
+    serial,
     text,
     timestamp,
-    uniqueIndex,
-    uuid
+    uniqueIndex
 } from "drizzle-orm/pg-core";
 
 export const tx_status = pgEnum("tx_status", ["pending", "failed", "confirmed"]);
@@ -27,7 +27,7 @@ export type new_user = typeof users.$inferInsert;
 export const deposits = pgTable(
     "deposits",
     {
-        id: uuid("id").primaryKey().defaultRandom(),
+        id: serial("id").primaryKey(),
         privy_wallet_id: text("privy_wallet_id").notNull(),
         privy_address: text("privy_address").notNull(),
         asset: text("asset").notNull(),
@@ -55,7 +55,7 @@ export type new_deposit = typeof deposits.$inferInsert;
 export const sweeps = pgTable(
     "sweeps",
     {
-        id: uuid("id").primaryKey().defaultRandom(),
+        id: serial("id").primaryKey(),
         privy_wallet_id: text("privy_wallet_id").notNull(),
         asset: text("asset").notNull(),
         chain_caip2: text("chain_caip2").notNull(),
@@ -81,7 +81,7 @@ export type new_sweep = typeof sweeps.$inferInsert;
 export const trading_analysis_stream = pgTable(
     "trading_analysis_stream",
     {
-        id: uuid("id").primaryKey().defaultRandom(),
+        id: serial("id").primaryKey(),
         // which partner sent this, derived from the token used to connect
         partner: text("partner").notNull(),
         // the parsed message when it was valid JSON, otherwise null
@@ -107,11 +107,11 @@ export type new_trading_analysis_stream_message = typeof trading_analysis_stream
 export const trading_analysis = pgTable(
     "trading_analysis",
     {
-        id: uuid("id").primaryKey().defaultRandom(),
+        id: serial("id").primaryKey(),
         // the partner whose stream this analysis was derived from
         partner: text("partner").notNull(),
         // the raw stream row this came from, for traceability and backfills
-        source_id: uuid("source_id"),
+        source_id: integer("source_id"),
         // optional coarse key the frontend can filter on, e.g. a market symbol
         symbol: text("symbol"),
         // the finished analysis the frontend renders; shape TBD once we see real data
@@ -185,7 +185,7 @@ export type activity_data = activity_data_by_type[keyof activity_data_by_type];
 export const activities = pgTable(
     "activities",
     {
-        id: uuid("id").primaryKey().defaultRandom(),
+        id: serial("id").primaryKey(),
         privy_address: text("privy_address").notNull(),
         type: activity_type("type").notNull(),
         // status stays a real column, not a `data` field: it is the one thing that

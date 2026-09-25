@@ -57,6 +57,13 @@
       "when": 1790342199579,
       "tag": "0007_snake_case_activity_data",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790348770036,
+      "tag": "0008_serial_ids",
+      "breakpoints": true
     }
   ]
 }
