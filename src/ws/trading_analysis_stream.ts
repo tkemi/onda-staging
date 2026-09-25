@@ -2,6 +2,7 @@ import type {IncomingMessage, Server} from "http";
 import type {Duplex} from "stream";
 import {WebSocket, WebSocketServer, type RawData} from "ws";
 import {db, trading_analysis_stream, type new_trading_analysis_stream_message} from "../db";
+import {send_analysis_signal} from "../services";
 
 // Path partners connect to, e.g. wss://<host>/trading-analysis-stream?token=...
 const WS_PATH = "/trading-analysis-stream";
@@ -146,6 +147,11 @@ export const attach_trading_analysis_stream = (server: Server): WebSocketServer 
             void store_stream_message(ws.partner, raw)
                 .then(() => {
                     ws.send(JSON.stringify({type: "ack"}));
+
+                    // fire-and-forget: notify Telegram once the delivery is safely stored.
+                    // send_analysis_signal never throws, so a Telegram outage cannot affect
+                    // ingestion or the ack the partner already received.
+                    void send_analysis_signal(ws.partner, raw);
                 })
                 .catch((error: unknown) => {
                     // never let a storage failure kill the socket — log and tell the sender
