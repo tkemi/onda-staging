@@ -174,7 +174,9 @@ export interface deposit_activity_data {
     token_address: string;
     token_symbol: string;
     token_decimals: number;
-    tx_hash: string;
+    // null on a reconciliation row: USDC that was swept but had no deposit of its own,
+    // so there is no single transfer to name
+    tx_hash: string | null;
     sender: string | null;
 }
 

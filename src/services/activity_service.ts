@@ -24,10 +24,10 @@ const base_activity = z.object({
     token_address: z.string(),
     token_decimals: z.number().int(),
     token_symbol: z.string(),
-    // epoch milliseconds, not an ISO string: a number the client can hand straight to
-    // new Date() or compare without parsing
+    // epoch SECONDS, not milliseconds and not an ISO string. The client multiplies by
+    // 1000 for new Date(); a value near 1.79e9 is seconds, near 1.79e12 is milliseconds.
     created_at: z.number().int(),
-    tx_hash: z.string(),
+    tx_hash: z.string().nullable(),
     sender: z.string().nullable(),
 });
 
@@ -55,7 +55,9 @@ export const to_activity_item = (row: activity): activity_item => ({
     id: row.id.toString(),
     type: row.type,
     status: row.status,
-    created_at: row.occurred_at.getTime(),
+    // seconds, floored - occurred_at is a millisecond-precision timestamp and the API
+    // contract is seconds
+    created_at: Math.floor(row.occurred_at.getTime() / 1000),
     ...row.data,
 });
 

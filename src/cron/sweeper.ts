@@ -159,17 +159,24 @@ export const sendTx = async () => {
     }
 };
 
+// Source key for a reconciliation row. Prefixed so it can never collide with a deposit's
+// key, which is a bare integer id, and derived from the sweep so a retried sweep updates
+// the same row instead of inserting another.
+const reconciliation_key = (sweep_id: number): string => `sweep:${sweep_id}`;
+
 // The feed row's status follows the sweep, because the sweep is what actually delivers
 // the money: until it confirms, the deposit is sitting in an intermediate wallet.
-const set_activity_status = async (deposit_ids: number[], status: "confirmed" | "failed") => {
+const set_activity_status = async (source_keys: string[], status: "confirmed" | "failed") => {
+    if (source_keys.length === 0) {
+        return;
+    }
+
     await db
         .update(activities)
         .set({status: status})
         .where(and(
             eq(activities.type, "deposit-on-chain"),
-            // source_key is a generic text key across activity types, so a deposit's
-            // numeric id is stored and matched as its string form
-            inArray(activities.source_key, deposit_ids.map(String))
+            inArray(activities.source_key, source_keys)
         ));
 };
 
@@ -248,7 +255,46 @@ const run_sweep = async () => {
             };
         });
 
+        // Reconcile the feed against what the sweep actually moved. The sweep sends the
+        // whole wallet balance, but only USDC that arrived as a recorded deposit has a row
+        // above - anything else (a transfer that landed before the wallet was registered,
+        // a delivery quicknode never made) would reach hyperliquid invisibly and the feed
+        // would under-report what the user funded.
+        const attributed = group.rows.reduce((total, row) => total + BigInt(row.amount), 0n);
+        const remainder = balance - attributed;
+
+        if (remainder > 0n) {
+            const token = token_by_address.get(USDC.toLowerCase())!;
+
+            console.log(`[sweeper] ${group.privy_address}: ${remainder} of ${balance} swept has no deposit row, adding a reconciliation activity`);
+
+            activity_rows.push({
+                privy_address: group.privy_address,
+                type: "deposit-on-chain" as const,
+                source_key: reconciliation_key(sweep!.id),
+                data: {
+                    amount_wei: remainder.toString(),
+                    token_address: USDC.toLowerCase(),
+                    token_symbol: token.symbol,
+                    token_decimals: token.decimals,
+                    // no single transfer to point at, and no one sender
+                    tx_hash: null,
+                    sender: null,
+                },
+                // the sweep is when we learned about it; the arrival time is unknown
+                occurred_at: new Date(),
+            });
+        } else if (remainder < 0n) {
+            // the deposits say more arrived than the wallet held, so USDC left by some
+            // route we do not record. Nothing to add to the feed, but it should be seen.
+            console.error(`[sweeper] ${group.privy_address}: deposits total ${attributed} exceeds the ${balance} swept by ${-remainder}`);
+        }
+
         await db.insert(activities).values(activity_rows).onConflictDoNothing();
+
+        // every key the rows above were written under, so the status updates below reach
+        // the reconciliation row as well as the per-deposit ones
+        const activity_keys = activity_rows.map((row) => row.source_key);
 
         try {
             const tx = await privy.wallets().ethereum().sendTransaction(group.privy_wallet_id, {
@@ -286,7 +332,7 @@ const run_sweep = async () => {
                     .set({status: "failed"})
                     .where(inArray(deposits.id, group.deposit_ids));
 
-                await set_activity_status(group.deposit_ids, "failed");
+                await set_activity_status(activity_keys, "failed");
 
                 console.error(`[sweeper] ${outcome.status} for ${group.privy_wallet_id}: ${outcome.hash}`);
 
@@ -303,7 +349,7 @@ const run_sweep = async () => {
                 .set({is_sent: true, status: "confirmed"})
                 .where(inArray(deposits.id, group.deposit_ids));
 
-            await set_activity_status(group.deposit_ids, "confirmed");
+            await set_activity_status(activity_keys, "confirmed");
 
             console.log(`[sweeper] swept ${balance} for ${group.privy_wallet_id}: ${outcome.hash}`);
         } catch (error: unknown) {
@@ -319,7 +365,7 @@ const run_sweep = async () => {
                 .set({status: "failed"})
                 .where(inArray(deposits.id, group.deposit_ids));
 
-            await set_activity_status(group.deposit_ids, "failed");
+            await set_activity_status(activity_keys, "failed");
 
             console.error(`[sweeper] failed for ${group.privy_wallet_id}: ${reason}`);
         }
