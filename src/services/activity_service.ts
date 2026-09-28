@@ -40,6 +40,8 @@ export const activity_schema = z.discriminatedUnion("type", [
     base_activity.extend({
         type: z.literal("withdraw-on-chain"),
         destination: z.string(),
+        // optional here, unlike a deposit's, per the shape the frontend consumes
+        tx_hash: z.string().nullish(),
     }),
 ]);
 

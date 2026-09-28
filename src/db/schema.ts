@@ -188,7 +188,9 @@ export interface withdraw_activity_data {
     token_address: string;
     token_symbol: string;
     token_decimals: number;
-    tx_hash: string;
+    // optional in the frontend contract, so absent and null both have to be tolerated.
+    // FinalizedWithdrawal always carries one, so a row written from the indexer has it.
+    tx_hash?: string | null;
     // where the money went, which is not one of our wallets
     destination: string;
 }
