@@ -4,6 +4,7 @@ import {config} from "dotenv"
 import {
     create_wallet_router,
     get_activity_router,
+    indexer_webhook_router,
     get_wallet_router,
     quicknode_webhook_router
 } from "./routes";
@@ -35,6 +36,7 @@ app.use(express.json({
 }));
 
 app.use("/api/webhooks", quicknode_webhook_router);
+app.use("/api/webhooks/indexer", indexer_webhook_router);
 
 app.use("/api/create-wallet", create_wallet_router);
 app.use("/api/wallet", get_wallet_router);

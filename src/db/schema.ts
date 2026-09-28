@@ -149,7 +149,7 @@ export type new_trading_analysis_result = typeof trading_analysis.$inferInsert;
 // `users`, matching deposits/sweeps: the ingest paths must not depend on a
 // user lookup succeeding.
 
-export const activity_type = pgEnum("activity_type", ["deposit-on-chain"]);
+export const activity_type = pgEnum("activity_type", ["deposit-on-chain", "withdraw-on-chain"]);
 
 // What lives in `data`, per activity type.
 //
@@ -180,10 +180,24 @@ export interface deposit_activity_data {
     sender: string | null;
 }
 
+// Money leaving hyperliquid back to an address the user chose. Written by the indexer
+// webhook from Bridge2's FinalizedWithdrawal, whose indexed `user` is the privy address
+// and whose `usd` is already in the token's base units.
+export interface withdraw_activity_data {
+    amount_wei: string;
+    token_address: string;
+    token_symbol: string;
+    token_decimals: number;
+    tx_hash: string;
+    // where the money went, which is not one of our wallets
+    destination: string;
+}
+
 // Keyed by the enum so the two cannot drift: a new activity_type has no valid
 // `data` shape until it is added here.
 export interface activity_data_by_type {
     "deposit-on-chain": deposit_activity_data;
+    "withdraw-on-chain": withdraw_activity_data;
 }
 
 export type activity_data = activity_data_by_type[keyof activity_data_by_type];

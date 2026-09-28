@@ -28,13 +28,19 @@ const base_activity = z.object({
     // 1000 for new Date(); a value near 1.79e9 is seconds, near 1.79e12 is milliseconds.
     created_at: z.number().int(),
     tx_hash: z.string().nullable(),
-    sender: z.string().nullable(),
 });
 
-// A discriminated union, not one flat object: the next types (card on-ramp, trade,
-// liquidation) carry completely different fields, and the client switches on `type`.
+// A discriminated union, not one flat object: each type carries its own fields, and the
+// client switches on `type`. A deposit names who sent it; a withdrawal names where it went.
 export const activity_schema = z.discriminatedUnion("type", [
-    base_activity.extend({type: z.literal("deposit-on-chain")}),
+    base_activity.extend({
+        type: z.literal("deposit-on-chain"),
+        sender: z.string().nullable(),
+    }),
+    base_activity.extend({
+        type: z.literal("withdraw-on-chain"),
+        destination: z.string(),
+    }),
 ]);
 
 export const activity_response_schema = z.object({
@@ -50,6 +56,9 @@ export type activity_response = z.infer<typeof activity_response_schema>;
 // No per-field mapping: `data` is stored under the names the frontend reads, so a row
 // becomes a response item by spreading it over the four columns the feed owns. A new
 // activity type needs nothing here - whatever its `data` holds is what it serves.
+//
+// The cast is the one place the type/data correlation is asserted: every writer sets them
+// together, but a jsonb column cannot tell the compiler which shape goes with which type.
 export const to_activity_item = (row: activity): activity_item => ({
     // the id column is a numeric auto-increment; the feed contract keeps it a string
     id: row.id.toString(),
@@ -59,7 +68,7 @@ export const to_activity_item = (row: activity): activity_item => ({
     // contract is seconds
     created_at: Math.floor(row.occurred_at.getTime() / 1000),
     ...row.data,
-});
+} as activity_item);
 
 export const get_activity = async (
     privy_address: string,
