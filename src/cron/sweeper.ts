@@ -217,6 +217,7 @@ const run_sweep = async () => {
             .insert(sweeps)
             .values({
                 privy_wallet_id: group.privy_wallet_id,
+                privy_address: group.privy_address,
                 asset: USDC.toLowerCase(),
                 chain_caip2: CAIP2,
                 amount: balance.toString(),

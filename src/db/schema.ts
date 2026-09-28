@@ -57,6 +57,10 @@ export const sweeps = pgTable(
     {
         id: serial("id").primaryKey(),
         privy_wallet_id: text("privy_wallet_id").notNull(),
+        // the wallet's LOWERCASE address. Denormalised from users alongside
+        // privy_wallet_id, the same way deposits carries both, so a sweep can be
+        // looked up by address without a join
+        privy_address: text("privy_address").notNull(),
         asset: text("asset").notNull(),
         chain_caip2: text("chain_caip2").notNull(),
         amount: numeric("amount", {precision: 78, scale: 0}).notNull(),

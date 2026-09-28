@@ -64,6 +64,13 @@
       "when": 1790348770036,
       "tag": "0008_serial_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790582971322,
+      "tag": "0009_sweeps_privy_address",
+      "breakpoints": true
     }
   ]
 }
