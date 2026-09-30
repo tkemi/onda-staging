@@ -82,6 +82,7 @@ from the partner's on-demand HTTP APIs.
 | `trade_setups` | **the canonical processed output** (the star of the pipeline) |
 | `accumulation_plans` | spot/swing ladders (a different primitive from trade_setups) |
 | `user_trade_settings` | per-user policy (exit style, entry style, breakeven, trailing) |
+| `partner_fetch_state` | per-coin on-demand fetch state (supported? last fetched when?) |
 
 ### `trade_setups` (the important one)
 
@@ -120,15 +121,33 @@ Validated on real data: **15,674 raw messages → 865 distinct setups.**
 
 ### On-demand — `sync_on_demand` cron
 
-`src/cron/sync_on_demand.ts`, once a day:
+`src/cron/sync_on_demand.ts`, **every 30 minutes**. It builds:
 
 - **Futures plans** → each response expands into **one `trade_setups` row per zone**
   (long[] + short[]), `source_type = futures_plan`, dedup keyed also by timeframe.
-- **Spot zones** → one `accumulation_plans` row per coin, upserted (latest replaces
-  yesterday's).
+- **Spot zones** → one `accumulation_plans` row per coin, upserted (latest replaces the
+  previous).
 
-Symbol set: `ONDEMAND_SYMBOLS` env (explicit list) or, by default, derived from the HL
+Two realities shape how it runs: the partner **covers only a subset** of the coins HL lists
+(it returns **400** for the rest), and it **rate-limits** us (**429**). So the cron is
+stateful, via `partner_fetch_state` (one row per coin per kind):
+
+- **Unsupported coins are flagged** — a 400 sets `supported = false`, and that coin is never
+  queried again (until the flag is cleared manually).
+- **Each run only fetches stale coins** — `last_fetch_at` older than **24h** (`FRESH_MS`) —
+  **oldest first**, up to a per-run call budget (`ONDEMAND_MAX_CALLS`, default 40).
+- **On a 429 it stops early**; the coins it didn't reach stay "due" and are picked up by the
+  next run. Across the 48 runs a day, every supported coin refreshes within 24h while staying
+  under the partner's limit.
+- Transient errors (5xx / network) leave the coin due to retry; a success stamps
+  `last_fetch_at = now`.
+
+The budget is **shared across futures + spot** in a run, since the partner's rate limit is
+shared. Symbol set: `ONDEMAND_SYMBOLS` (explicit list) or, by default, derived from the HL
 markets we support. Timeframe: `PARTNER_FUTURES_TIMEFRAME` (default `4H`).
+
+> **To re-enable a coin** the partner later starts covering, clear its flag:
+> `UPDATE partner_fetch_state SET supported = true, last_fetch_at = NULL WHERE base_coin = '…';`
 
 ---
 
@@ -278,7 +297,7 @@ their settings) is future; for now the setups channel is the shared user-facing 
 | Monitor | `npm run monitor` (`worker`) | always | polls prices, fires events |
 | HL markets sync | `npm run hl:markets` | daily | populate before first processing |
 | Signal processing | `npm run analysis` | ~1 min | raw → trade_setups |
-| On-demand pull | `npm run ondemand` | daily | futures plans + spot zones |
+| On-demand pull | `npm run ondemand` | every 30 min | futures plans + spot zones (stateful) |
 | Migrations | `npm run db:migrate` | on deploy | runs automatically (Procfile `release`) |
 
 `*:dev` variants run from source via `tsx`.
@@ -294,7 +313,7 @@ Crons are added to `app.json` (alongside the existing sweeper/sync) when wiring 
 ```json
 { "command": "node dist/cron/sync_hl_markets.js",          "schedule": "0 3 * * *" },
 { "command": "node dist/cron/process_trading_analysis.js", "schedule": "* * * * *" },
-{ "command": "node dist/cron/sync_on_demand.js",           "schedule": "30 3 * * *" }
+{ "command": "node dist/cron/sync_on_demand.js",           "schedule": "*/30 * * * *" }
 ```
 
 First deploy: after migrations, run `npm run hl:markets` once so the markets table is
@@ -315,6 +334,8 @@ populated before the processing cron runs.
 | `PARTNER_API_TOKEN` | on-demand cron | optional static-bearer override for tests |
 | `PARTNER_FUTURES_TIMEFRAME` | on-demand cron | default `4H` |
 | `ONDEMAND_SYMBOLS` | on-demand cron | optional explicit symbol list |
+| `ONDEMAND_MAX_CALLS` | on-demand cron | max partner calls per run; default `40` |
+| `ONDEMAND_CALL_DELAY_MS` | on-demand cron | delay between calls; default `500` |
 | `MONITOR_INTERVAL_MS` | monitor | default `5000` |
 
 **Partner API auth**: the on-demand client exchanges `PARTNER_API_CLIENT_ID` /
@@ -330,8 +351,10 @@ breaking the rest of the pipeline.
 
 These are implemented with sensible defaults but are explicitly **open for tuning**:
 
-- **On-demand cadence** — currently once a day. `TTL_HOURS`/`SPOT_PLAN_TTL_HOURS` in the
-  code.
+- **On-demand cadence & freshness** — runs every 30 min; a coin is re-fetched when its last
+  success is older than 24h (`FRESH_MS`), up to `ONDEMAND_MAX_CALLS` per run. Unsupported
+  coins (partner 400) are flagged off permanently until reset. `TTL_HOURS` /
+  `SPOT_PLAN_TTL_HOURS` set setup/plan validity windows.
 - **Invalidation** — a pending setup is invalidated when price crosses the stop before
   entry. We may also want to honour the Futures Plan's explicit invalidation price, or add
   a "too far from entry" rule.

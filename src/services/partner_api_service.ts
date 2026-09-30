@@ -85,14 +85,23 @@ const get_token = async (): Promise<string | null> => {
     return mint_token(creds);
 };
 
-const request = async (path: string, body: object, retry = true): Promise<unknown | null> => {
+// The status is surfaced so callers can tell "symbol not supported" (400) from "rate
+// limited" (429) from a transient failure, and act accordingly. status 0 = not configured,
+// -1 = network/parse error.
+export interface api_result {
+    ok: boolean;
+    status: number;
+    data: unknown | null;
+}
+
+const request = async (path: string, body: object, retry = true): Promise<api_result> => {
     const base = get_base();
     const token = await get_token();
 
     if (!base || !token) {
         console.warn("[partner-api] not configured (base/credentials missing), not calling");
 
-        return null;
+        return {ok: false, status: 0, data: null};
     }
 
     try {
@@ -113,21 +122,19 @@ const request = async (path: string, body: object, retry = true): Promise<unknow
         }
 
         if (!response.ok) {
-            console.error(`[partner-api] ${path} ${JSON.stringify(body)} -> ${response.status}`);
-
-            return null;
+            return {ok: false, status: response.status, data: null};
         }
 
-        return await response.json();
+        return {ok: true, status: response.status, data: await response.json()};
     } catch (error: unknown) {
         console.error(`[partner-api] ${path} error:`, error);
 
-        return null;
+        return {ok: false, status: -1, data: null};
     }
 };
 
-export const fetch_futures_plan = (symbol: string, timeframe: string): Promise<unknown | null> =>
+export const fetch_futures_plan = (symbol: string, timeframe: string): Promise<api_result> =>
     request(FUTURES_PATH, {symbol, timeframe});
 
-export const fetch_spot_zones = (symbol: string): Promise<unknown | null> =>
+export const fetch_spot_zones = (symbol: string): Promise<api_result> =>
     request(SPOT_PATH, {symbol});

@@ -228,6 +228,38 @@ export const accumulation_plans = pgTable(
 export type accumulation_plan = typeof accumulation_plans.$inferSelect;
 export type new_accumulation_plan = typeof accumulation_plans.$inferInsert;
 
+// Per-market state for the on-demand pull. The partner covers only a subset of the coins
+// HL lists (it returns 400 for the rest) and rate-limits us (429), so we:
+//   - flag unsupported coins (supported=false) and never query them again,
+//   - record last_fetch_at so each run only fetches coins stale beyond the freshness window
+//     and resumes where the previous run stopped.
+// Kept in its own table so the daily hyperliquid_markets full-refresh can't wipe it.
+export const partner_fetch_state = pgTable(
+    "partner_fetch_state",
+    {
+        id: serial("id").primaryKey(),
+        // perp = futures plan, spot = spot zones
+        kind: hl_market_kind("kind").notNull(),
+        base_coin: text("base_coin").notNull(),
+        // the partner symbol we query, e.g. BNBUSDT
+        symbol: text("symbol").notNull(),
+        // false once the partner has told us (400) it does not cover this coin
+        supported: boolean("supported").notNull().default(true),
+        // last SUCCESSFUL fetch; null = never fetched
+        last_fetch_at: timestamp("last_fetch_at", {withTimezone: true}),
+        // last HTTP status seen, for debugging (400 unsupported, 429 rate-limited, ...)
+        last_status: integer("last_status"),
+        updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("partner_fetch_state_key").on(table.kind, table.base_coin),
+        index("partner_fetch_state_due_idx").on(table.kind, table.supported, table.last_fetch_at),
+    ]
+);
+
+export type partner_fetch_row = typeof partner_fetch_state.$inferSelect;
+export type new_partner_fetch_row = typeof partner_fetch_state.$inferInsert;
+
 // ---------------------------------------------------------------------------
 // Activity feed
 // ---------------------------------------------------------------------------

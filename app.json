@@ -18,7 +18,7 @@
     },
     {
       "command": "node dist/cron/sync_on_demand.js",
-      "schedule": "30 3 * * *"
+      "schedule": "*/30 * * * *"
     }
   ]
 }
