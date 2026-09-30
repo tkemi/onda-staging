@@ -78,6 +78,34 @@
       "when": 1790593346398,
       "tag": "0010_withdraw_activity_type",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790786443741,
+      "tag": "0011_hyperliquid_markets",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790786999423,
+      "tag": "0012_trade_setups",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790788250559,
+      "tag": "0013_ondemand_and_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790789054469,
+      "tag": "0014_setup_superseded",
+      "breakpoints": true
     }
   ]
 }

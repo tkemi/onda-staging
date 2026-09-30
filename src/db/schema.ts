@@ -105,32 +105,128 @@ export const trading_analysis_stream = pgTable(
 export type trading_analysis_stream_message = typeof trading_analysis_stream.$inferSelect;
 export type new_trading_analysis_stream_message = typeof trading_analysis_stream.$inferInsert;
 
-// The processed output: the actual trading analysis served to the frontend. The
-// process_trading_analysis cron reads raw partner deliveries from trading_analysis_stream,
-// turns them into analysis rows here, then marks the source rows processed.
-export const trading_analysis = pgTable(
-    "trading_analysis",
+// The canonical, user-agnostic trade setup: the processed output the whole pipeline is
+// built around. The process_trading_analysis cron turns each raw partner delivery into
+// one of these (filtered to Hyperliquid-tradable markets), completing a full TP ladder
+// and tagging every level partner/derived. Per-user policy (which TPs to take, runner,
+// move-to-breakeven, entry style) is applied on top of this at presentation/execution
+// time - it never touches this row, which is the single "truth" of the setup.
+
+// perp or spot, shared by trade_setups and the hyperliquid_markets table below
+export const hl_market_kind = pgEnum("hl_market_kind", ["perp", "spot"]);
+
+// which partner signal family this setup came from
+export const setup_source = pgEnum("setup_source", [
+    "filter_mix",
+    "liquidity_hunt",
+    "signal_hub",
+    "futures_plan",
+]);
+
+export const trade_direction = pgEnum("trade_direction", ["long", "short"]);
+
+// where a price level came from: sent by the partner, or derived by us (R-multiples)
+export const level_source = pgEnum("level_source", ["partner", "derived"]);
+
+export const setup_status = pgEnum("setup_status", [
+    "pending",      // created, waiting for price to approach entry
+    "armed",        // price is near the entry zone
+    "triggered",    // price hit entry - user notified to enter (execution is UI-side)
+    "active",       // reserved (position tracking is not done backend-side)
+    "closed",       // reserved
+    "invalidated",  // SL hit, or invalidated before entry was ever reached
+    "expired",      // went stale unfilled
+    "superseded",   // a newer signal with a similar entry replaced this one
+]);
+
+// prices span BTC (~80k) down to sub-cent memecoins (0.00000829), so we keep generous
+// precision and many decimals rather than a display-oriented scale.
+const price = (name: string) => numeric(name, {precision: 40, scale: 20});
+
+export const trade_setups = pgTable(
+    "trade_setups",
     {
         id: serial("id").primaryKey(),
-        // the partner whose stream this analysis was derived from
-        partner: text("partner").notNull(),
-        // the raw stream row this came from, for traceability and backfills
-        source_id: integer("source_id"),
-        // optional coarse key the frontend can filter on, e.g. a market symbol
-        symbol: text("symbol"),
-        // the finished analysis the frontend renders; shape TBD once we see real data
-        analysis: jsonb("analysis").notNull(),
+        source_type: setup_source("source_type").notNull(),
+        // the raw trading_analysis_stream row this came from (null for on-demand sources)
+        stream_id: integer("stream_id"),
+
+        // --- market (normalised to Hyperliquid) ---
+        // the partner's original symbol, e.g. BNBUSDT
+        symbol: text("symbol").notNull(),
+        // normalised base coin, e.g. BNB
+        base_coin: text("base_coin").notNull(),
+        market_kind: hl_market_kind("market_kind").notNull(),
+        // what Hyperliquid calls the market, e.g. BNB or kPEPE or "PURR/USDC"
+        hl_symbol: text("hl_symbol").notNull(),
+        hl_market_id: integer("hl_market_id"),
+
+        // --- the setup ---
+        direction: trade_direction("direction").notNull(),
+        // entry as a zone; single-price signals set low == high
+        entry_low: price("entry_low").notNull(),
+        entry_high: price("entry_high").notNull(),
+        sl: price("sl"),
+        tp1: price("tp1"),
+        tp1_source: level_source("tp1_source"),
+        tp2: price("tp2"),
+        tp2_source: level_source("tp2_source"),
+        tp3: price("tp3"),
+        tp3_source: level_source("tp3_source"),
+        // risk:reward to TP1, when computable
+        risk_reward: numeric("risk_reward", {precision: 20, scale: 6}),
+
+        // everything type-specific: confidence, score, liquidationSide, EMAs, signalType,
+        // confluence factors, timeframe, ... - shaped per source_type
+        data: jsonb("data").notNull(),
+
+        status: setup_status("status").notNull().default("pending"),
+        // collapses byte-identical re-sends of the same setup (partner resends heavily);
+        // distinct entries stay distinct
+        dedup_key: text("dedup_key").notNull(),
+        generated_at: timestamp("generated_at", {withTimezone: true}).notNull(),
+        expires_at: timestamp("expires_at", {withTimezone: true}),
         created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
     },
     (table) => [
-        index("trading_analysis_partner_idx").on(table.partner),
-        index("trading_analysis_symbol_idx").on(table.symbol),
-        index("trading_analysis_created_idx").on(table.created_at),
+        uniqueIndex("trade_setups_dedup_key").on(table.source_type, table.dedup_key),
+        // the monitor scans open setups; the feed lists by recency
+        index("trade_setups_status_idx").on(table.status, table.base_coin),
+        index("trade_setups_generated_idx").on(table.generated_at),
     ]
 );
 
-export type trading_analysis_result = typeof trading_analysis.$inferSelect;
-export type new_trading_analysis_result = typeof trading_analysis.$inferInsert;
+export type trade_setup = typeof trade_setups.$inferSelect;
+export type new_trade_setup = typeof trade_setups.$inferInsert;
+
+// Spot / swing accumulation plans (the on-demand spot-zones API). A different primitive
+// from trade_setups: not one entry+SL+TP, but a laddered buy/sell plan with allocation
+// percentages, for patient accumulation. One current plan per coin, refreshed daily.
+export const accumulation_plans = pgTable(
+    "accumulation_plans",
+    {
+        id: serial("id").primaryKey(),
+        symbol: text("symbol").notNull(),
+        base_coin: text("base_coin").notNull(),
+        hl_symbol: text("hl_symbol").notNull(),
+        hl_market_id: integer("hl_market_id"),
+        current_price: price("current_price"),
+        // arrays of {percent, price, allocationPct}
+        buy_zones: jsonb("buy_zones").notNull(),
+        sell_zones: jsonb("sell_zones").notNull(),
+        // {deployedPct, reservePct, profitTargetPct, runnerPct}
+        summary: jsonb("summary").notNull(),
+        generated_at: timestamp("generated_at", {withTimezone: true}).notNull(),
+        expires_at: timestamp("expires_at", {withTimezone: true}),
+        created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("accumulation_plans_base_coin_key").on(table.base_coin),
+    ]
+);
+
+export type accumulation_plan = typeof accumulation_plans.$inferSelect;
+export type new_accumulation_plan = typeof accumulation_plans.$inferInsert;
 
 // ---------------------------------------------------------------------------
 // Activity feed
@@ -234,3 +330,75 @@ export const activities = pgTable(
 
 export type activity = typeof activities.$inferSelect;
 export type new_activity = typeof activities.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Hyperliquid markets
+// ---------------------------------------------------------------------------
+//
+// Every market tradable on Hyperliquid, refreshed daily by the sync_hl_markets cron
+// from the venue's own meta/spotMeta endpoints. Partner signals quote in USDT (e.g.
+// BNBUSDT) but Hyperliquid trades everything against USDC, so signal processing
+// normalises a symbol to its base coin and looks it up here to decide whether the
+// signal is tradable at all - an untradeable coin never becomes a trade setup.
+
+export const hyperliquid_markets = pgTable(
+    "hyperliquid_markets",
+    {
+        id: serial("id").primaryKey(),
+        kind: hl_market_kind("kind").notNull(),
+        // the base coin as Hyperliquid names it: BTC, ETH, kPEPE, ... (the perp universe
+        // name, or the base token of a spot pair)
+        base_coin: text("base_coin").notNull(),
+        // what the venue calls the market: the coin for a perp, the pair for spot ("PURR/USDC")
+        hl_symbol: text("hl_symbol").notNull(),
+        // order-size decimals, needed later to size executable orders
+        sz_decimals: integer("sz_decimals"),
+        // perps only
+        max_leverage: integer("max_leverage"),
+        is_delisted: boolean("is_delisted").notNull().default(false),
+        updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("hyperliquid_markets_kind_symbol_key").on(table.kind, table.hl_symbol),
+        index("hyperliquid_markets_lookup_idx").on(table.kind, table.base_coin),
+    ]
+);
+
+export type hyperliquid_market = typeof hyperliquid_markets.$inferSelect;
+export type new_hyperliquid_market = typeof hyperliquid_markets.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Per-user trade settings (the policy layer)
+// ---------------------------------------------------------------------------
+//
+// A canonical trade_setup is user-agnostic. These settings are the overlay that projects
+// one setup into a given user's experience: how much to scale out vs let run, whether to
+// move the stop to breakeven, how to treat the entry, and the trailing distance for the
+// runner. Nothing here ever changes a stored setup - it only shapes what that user is
+// notified about and (later) how their position is managed. Defaults cover users who
+// never open the settings screen.
+
+// how much a user scales out at the TPs vs leaves running
+export const exit_style = pgEnum("exit_style", ["conservative", "balanced", "aggressive"]);
+
+// how a user treats the entry zone
+export const entry_style = pgEnum("entry_style", ["exact", "zone", "dca"]);
+
+// when (if ever) to move the stop to the entry price
+export const breakeven_trigger = pgEnum("breakeven_trigger", ["off", "after_tp1", "at_1r"]);
+
+export const user_trade_settings = pgTable("user_trade_settings", {
+    // references users.id (the Privy user id); no FK, matching the rest of the schema
+    user_id: text("user_id").primaryKey(),
+    exit_style: exit_style("exit_style").notNull().default("balanced"),
+    entry_style: entry_style("entry_style").notNull().default("zone"),
+    move_to_breakeven: breakeven_trigger("move_to_breakeven").notNull().default("after_tp1"),
+    trailing_enabled: boolean("trailing_enabled").notNull().default(true),
+    // trailing distance for the runner, as a percent; null = use the default
+    trailing_pct: numeric("trailing_pct", {precision: 10, scale: 4}),
+    updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+    created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
+});
+
+export type user_trade_setting = typeof user_trade_settings.$inferSelect;
+export type new_user_trade_setting = typeof user_trade_settings.$inferInsert;

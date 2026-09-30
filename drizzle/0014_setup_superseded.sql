@@ -1,0 +1,1 @@
+ALTER TYPE "public"."setup_status" ADD VALUE 'superseded';

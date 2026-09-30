@@ -1,20 +1,15 @@
-// Posts trading-analysis signals to a private Telegram channel via the Bot API.
-//
-// The bot must be an ADMIN of the channel (with "Post Messages") for sendMessage to
-// work. TELEGRAM_CHAT_ID is the channel's numeric id, e.g. -1001234567890.
+// Posts to private Telegram channels via the Bot API. The bot must be an ADMIN of each
+// channel (with "Post Messages"). Two channels:
+//   TELEGRAM_CHAT_ID         - raw incoming partner signals (ops/debug view)
+//   TELEGRAM_SETUPS_CHAT_ID  - processed, user-facing setups + lifecycle events
+// The setups channel falls back to TELEGRAM_CHAT_ID when unset, so one channel still works.
 
 const API_BASE = "https://api.telegram.org";
 
-const get_config = (): {token: string; chat_id: string} | null => {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chat_id = process.env.TELEGRAM_CHAT_ID;
+const raw_chat = (): string | undefined => process.env.TELEGRAM_CHAT_ID;
 
-    if (!token || !chat_id) {
-        return null;
-    }
-
-    return {token: token, chat_id: chat_id};
-};
+const setups_chat = (): string | undefined =>
+    process.env.TELEGRAM_SETUPS_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID;
 
 // Telegram's HTML parse_mode only treats & < > specially, so escaping those three is
 // enough to keep arbitrary partner text from breaking the message.
@@ -189,21 +184,21 @@ const format_signal = (partner: string, raw: string): string => {
     return time ? `${body}\n\n🕒 ${time}` : body;
 };
 
-const post_message = async (text: string): Promise<boolean> => {
-    const config = get_config();
+const post_message = async (text: string, chat_id: string | undefined): Promise<boolean> => {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
 
-    if (!config) {
-        console.warn("[telegram] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing, not sending");
+    if (!token || !chat_id) {
+        console.warn("[telegram] TELEGRAM_BOT_TOKEN or chat id missing, not sending");
 
         return false;
     }
 
     try {
-        const response = await fetch(`${API_BASE}/bot${config.token}/sendMessage`, {
+        const response = await fetch(`${API_BASE}/bot${token}/sendMessage`, {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
-                chat_id: config.chat_id,
+                chat_id: chat_id,
                 text: text,
                 parse_mode: "HTML",
                 // signals are one per line already; no link previews to clutter them
@@ -227,8 +222,14 @@ const post_message = async (text: string): Promise<boolean> => {
     }
 };
 
-// Fire-and-forget notification for a partner delivery. Never throws: a Telegram outage
-// must not affect ingestion, so callers can invoke this without awaiting.
+// Fire-and-forget notification for a raw partner delivery -> the raw-signals channel.
+// Never throws: a Telegram outage must not affect ingestion.
 export const send_analysis_signal = async (partner: string, raw: string): Promise<void> => {
-    await post_message(format_signal(partner, raw));
+    await post_message(format_signal(partner, raw), raw_chat());
 };
+
+// Send a processed, user-facing message (a new setup, or a lifecycle event) -> the setups
+// channel. Callers build their own HTML and escape dynamic parts with escape_html.
+export const send_setup_message = (text: string): Promise<boolean> => post_message(text, setups_chat());
+
+export {escape_html};

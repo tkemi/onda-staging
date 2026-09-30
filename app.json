@@ -7,6 +7,18 @@
     {
       "command": "node dist/cron/sync_wallets.js",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "command": "node dist/cron/sync_hl_markets.js",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "command": "node dist/cron/process_trading_analysis.js",
+      "schedule": "* * * * *"
+    },
+    {
+      "command": "node dist/cron/sync_on_demand.js",
+      "schedule": "30 3 * * *"
     }
   ]
 }

@@ -18,6 +18,12 @@
     "sync:dev": "tsx src/cron/sync_wallets.ts",
     "analysis": "npm run build && node dist/cron/process_trading_analysis.js",
     "analysis:dev": "tsx src/cron/process_trading_analysis.ts",
+    "hl:markets": "npm run build && node dist/cron/sync_hl_markets.js",
+    "hl:markets:dev": "tsx src/cron/sync_hl_markets.ts",
+    "ondemand": "npm run build && node dist/cron/sync_on_demand.js",
+    "ondemand:dev": "tsx src/cron/sync_on_demand.ts",
+    "monitor": "node dist/worker/monitor.js",
+    "monitor:dev": "tsx src/worker/monitor.ts",
     "hl": "tsx src/cron/hl_balance.ts",
     "dev": "npm run build && npm run serve",
     "start": "node dist"
