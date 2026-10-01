@@ -1,4 +1,4 @@
-import {eq, sql} from "drizzle-orm";
+import {and, eq, inArray, or, sql} from "drizzle-orm";
 import {
     accumulation_plans,
     close_db,
@@ -13,8 +13,10 @@ import {
     type partner_fetch_row,
 } from "../db";
 import {
+    announce_ondemand_setups,
     apply_supersedence,
     build_perp_setup_row,
+    fetch_all_mids,
     fetch_futures_plan,
     fetch_spot_zones,
     groups_of,
@@ -219,12 +221,34 @@ const sync_futures = async (ctx: run_ctx, index: Map<string, hyperliquid_market>
         }
     }
 
+    let announced = 0;
+
     if (rows.length > 0) {
-        await db.insert(trade_setups).values(rows).onConflictDoNothing();
+        const inserted = await db.insert(trade_setups).values(rows).onConflictDoNothing().returning();
         await apply_supersedence(groups_of(rows));
+
+        // announce the newly-created, still-live futures setups to the on-demand channel,
+        // suppressing near-identical repeats (no-op if TELEGRAM_ONDEMAND_CHAT_ID is unset)
+        if (inserted.length > 0) {
+            const live = await db
+                .select({id: trade_setups.id})
+                .from(trade_setups)
+                .where(and(
+                    inArray(trade_setups.id, inserted.map((r) => r.id)),
+                    or(eq(trade_setups.status, "pending"), eq(trade_setups.status, "armed")),
+                ));
+            const live_ids = new Set(live.map((r) => r.id));
+            const live_setups = inserted.filter((r) => live_ids.has(r.id));
+
+            if (live_setups.length > 0) {
+                const mids = await fetch_all_mids();
+                announced = await announce_ondemand_setups(live_setups, mids);
+            }
+        }
     }
 
-    console.log(`[on-demand] futures: ${due.length} due, ${fetched} fetched -> ${rows.length} setups`);
+    console.log(`[on-demand] futures: ${due.length} due, ${fetched} fetched -> ${rows.length} setups` +
+        (announced > 0 ? `, announced ${announced}` : ""));
 };
 
 const sync_spot = async (ctx: run_ctx, index: Map<string, hyperliquid_market>): Promise<void> => {

@@ -1,7 +1,9 @@
 import {and, eq, gt, isNotNull, ne} from "drizzle-orm";
 import {db, trade_setups, type trade_setup} from "../db";
-import {notify_new_setup} from "./notification_service";
+import {notify_new_setup, notify_ondemand_setup} from "./notification_service";
 import {SIMILAR_ENTRY_PCT} from "./supersede";
+
+type notifier = (setup: trade_setup, current_price?: number) => Promise<void>;
 
 // Announce freshly-created setups to the setups channel, suppressing near-identical
 // repeats so the channel does not get spammed. A setup is only sent if no similar setup
@@ -44,11 +46,13 @@ const already_announced = async (setup: trade_setup): Promise<boolean> => {
     return rows.some((row) => similar(mid, (Number(row.entry_low) + Number(row.entry_high)) / 2));
 };
 
-// Announce the given (live, freshly-created) setups, skipping repeats. `mids` supplies the
-// current Hyperliquid price per hl_symbol for the message.
-export const announce_new_setups = async (
+// Announce the given (live, freshly-created) setups, skipping repeats, via the supplied
+// notifier (which decides the channel/format). `mids` supplies the current Hyperliquid price
+// per hl_symbol for the message.
+export const announce_setups = async (
     setups: trade_setup[],
-    mids: Map<string, number>
+    mids: Map<string, number>,
+    notify: notifier
 ): Promise<number> => {
     let sent = 0;
 
@@ -65,7 +69,7 @@ export const announce_new_setups = async (
         }
 
         try {
-            await notify_new_setup(setup, mids.get(setup.hl_symbol));
+            await notify(setup, mids.get(setup.hl_symbol));
             sent++;
         } catch (error: unknown) {
             console.error(`[announce] notify failed for setup ${setup.id}:`, error);
@@ -74,3 +78,15 @@ export const announce_new_setups = async (
 
     return sent;
 };
+
+// Pushed-signal setups -> the setups channel.
+export const announce_new_setups = (
+    setups: trade_setup[],
+    mids: Map<string, number>
+): Promise<number> => announce_setups(setups, mids, notify_new_setup);
+
+// On-demand futures-plan setups -> the on-demand channel.
+export const announce_ondemand_setups = (
+    setups: trade_setup[],
+    mids: Map<string, number>
+): Promise<number> => announce_setups(setups, mids, notify_ondemand_setup);

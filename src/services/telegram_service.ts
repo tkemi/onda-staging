@@ -1,8 +1,11 @@
 // Posts to private Telegram channels via the Bot API. The bot must be an ADMIN of each
-// channel (with "Post Messages"). Two channels:
-//   TELEGRAM_CHAT_ID         - raw incoming partner signals (ops/debug view)
-//   TELEGRAM_SETUPS_CHAT_ID  - processed, user-facing setups + lifecycle events
+// channel (with "Post Messages"). Three channels:
+//   TELEGRAM_CHAT_ID           - raw incoming partner signals (ops/debug view)
+//   TELEGRAM_SETUPS_CHAT_ID    - processed, user-facing pushed-signal setups + lifecycle
+//   TELEGRAM_ONDEMAND_CHAT_ID  - on-demand (futures-plan) setups
 // The setups channel falls back to TELEGRAM_CHAT_ID when unset, so one channel still works.
+// The on-demand channel does NOT fall back: if unset, on-demand setups simply are not
+// posted (they still land in the DB), so nothing new appears until you configure it.
 
 const API_BASE = "https://api.telegram.org";
 
@@ -10,6 +13,8 @@ const raw_chat = (): string | undefined => process.env.TELEGRAM_CHAT_ID;
 
 const setups_chat = (): string | undefined =>
     process.env.TELEGRAM_SETUPS_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID;
+
+const ondemand_chat = (): string | undefined => process.env.TELEGRAM_ONDEMAND_CHAT_ID;
 
 // Telegram's HTML parse_mode only treats & < > specially, so escaping those three is
 // enough to keep arbitrary partner text from breaking the message.
@@ -231,5 +236,9 @@ export const send_analysis_signal = async (partner: string, raw: string): Promis
 // Send a processed, user-facing message (a new setup, or a lifecycle event) -> the setups
 // channel. Callers build their own HTML and escape dynamic parts with escape_html.
 export const send_setup_message = (text: string): Promise<boolean> => post_message(text, setups_chat());
+
+// Send an on-demand (futures-plan) setup -> the on-demand channel. No fallback: skipped
+// when TELEGRAM_ONDEMAND_CHAT_ID is unset.
+export const send_ondemand_message = (text: string): Promise<boolean> => post_message(text, ondemand_chat());
 
 export {escape_html};

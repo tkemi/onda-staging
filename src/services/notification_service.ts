@@ -1,6 +1,6 @@
 import type {trade_setup} from "../db";
 import type {setup_event} from "./lifecycle";
-import {escape_html, send_setup_message} from "./telegram_service";
+import {escape_html, send_ondemand_message, send_setup_message} from "./telegram_service";
 
 // Processed, user-facing messages -> the setups Telegram channel. Two kinds:
 //   - notify_new_setup: a fresh setup, formatted the way a user would see it in the UI
@@ -133,18 +133,44 @@ export const notify_new_setup = async (
     await send_setup_message(lines.join("\n"));
 };
 
+// An on-demand futures-plan setup -> its own channel, with a short plain-language
+// explanation of what the message is and how to use it.
+export const notify_ondemand_setup = async (
+    setup: trade_setup,
+    current_price?: number
+): Promise<void> => {
+    const lines = [
+        `🧭 <b>On-Demand Futures Plan</b>`,
+        "",
+        ...setup_detail(setup, "Current price", current_price),
+        "",
+        "ℹ️ <i>A planned entry zone our partner generated on demand for this market and " +
+        "timeframe. It is not live yet — wait for price to reach the entry zone before " +
+        "entering. The targets marked <code>derived</code> are our own extension of the " +
+        "partner's levels. The setup is invalid if price reaches the stop first.</i>",
+    ];
+
+    await send_ondemand_message(lines.join("\n"));
+};
+
 // A lifecycle transition (entry hit, invalidated, expired) - same full body as a new setup,
 // with the event and the strategy in the header.
 export const notify_setup_event = async (
     setup: trade_setup,
     event: setup_event,
-    price: number
+    price: number,
+    reason?: string
 ): Promise<void> => {
-    const lines = [
-        `${EVENT_HEADER[event]} · ${SOURCE_LABEL[setup.source_type]}`,
-        "",
-        ...setup_detail(setup, "Price", price),
-    ];
+    const lines = [`${EVENT_HEADER[event]} · ${SOURCE_LABEL[setup.source_type]}`];
 
-    await send_setup_message(lines.join("\n"));
+    // explain why the setup was invalidated
+    if (reason) {
+        lines.push(`⚠️ ${reason}`);
+    }
+
+    lines.push("", ...setup_detail(setup, "Price", price));
+
+    // keep each setup's events in the same channel its creation went to
+    const send = setup.source_type === "futures_plan" ? send_ondemand_message : send_setup_message;
+    await send(lines.join("\n"));
 };

@@ -133,6 +133,13 @@ Validated on real data: **15,674 raw messages → 865 distinct setups.**
 - **Spot zones** → one `accumulation_plans` row per coin, upserted (latest replaces the
   previous).
 
+> **Futures-plan setups are announced to their own channel** (`TELEGRAM_ONDEMAND_CHAT_ID`),
+> separate from the pushed-signal setups channel, via `announce_ondemand_setups` →
+> `notify_ondemand_setup` — a message with an explanation of what an on-demand plan is and
+> how to use it. Repeats are suppressed the same way (`notified_at`). If that channel env is
+> unset, the setups still land in `trade_setups` (for the UI) but are not posted. They are
+> also **monitored** like every other setup (see [§8](#8-monitoring--lifecycle)).
+
 Two realities shape how it runs: the partner **covers only a subset** of the coins HL lists
 (it returns **400** for the rest), and it **rate-limits** us (**429**). So the cron is
 stateful, via `partner_fetch_state` (one row per coin per kind):
@@ -219,7 +226,9 @@ Raw rows are always retained regardless.
 
 `src/worker/monitor.ts` is a **long-running worker** (a Procfile `worker` process, not a
 cron). It polls Hyperliquid mid prices (`allMids`, ~1,100 markets) every
-`MONITOR_INTERVAL_MS` (default 5s) and advances each open setup:
+`MONITOR_INTERVAL_MS` (default 5s) and advances each open setup. It loads **every** setup in
+`pending`/`armed` with **no `source_type` filter**, so pushed signals and futures-plan
+setups are watched identically — all of them "wait for price to come to entry":
 
 ```
 pending ──approaching──► armed ──price in entry zone──► triggered
@@ -235,7 +244,10 @@ Rules live in the **pure, tested** `evaluate_setup` (`src/services/lifecycle.ts`
 - **triggered**: price inside `[entry_low, entry_high]` → the "enter now" moment, which the
   user acts on in the UI. The monitor stamps **`triggered_at`** here — the key field for
   backtesting (time-to-entry, and whether TPs/SL were hit afterwards).
-- **invalidated**: price passed the stop side before entry was ever reached.
+- **invalidated**: price passed the stop side before entry was ever reached. `evaluate_setup`
+  returns a **reason** with this event ("Price reached the stop before entry was filled"),
+  which the message shows as a `⚠️` line. The reason field is generic, ready for more
+  invalidation rules later (e.g. a Futures-Plan explicit invalidation price).
 - **expired**: `now > expires_at`.
 - **armed** transitions still happen internally but are **not notified** (no "approaching"
   spam).
@@ -280,17 +292,25 @@ user executes it on Hyperliquid through the UI. The backend places no orders.
 | Channel | Env | Content |
 |---|---|---|
 | Raw signals | `TELEGRAM_CHAT_ID` | every incoming partner delivery (ops/debug view) |
-| Setups | `TELEGRAM_SETUPS_CHAT_ID` | processed, user-facing setups + lifecycle events |
+| Setups | `TELEGRAM_SETUPS_CHAT_ID` | processed pushed-signal setups + lifecycle events |
+| On-demand | `TELEGRAM_ONDEMAND_CHAT_ID` | on-demand futures-plan setups (with explanation) |
 
 - **Raw** (`send_analysis_signal`): the three pushed signal types formatted per type;
   **never echoes the partner's `authToken`**.
-- **Setups** (`notify_new_setup`): each freshly-created, still-live setup, the way a user
-  sees it — **strategy**, **current price** (the live HL mid at send time), entry zone, stop,
-  the full TP ladder with each level tagged *partner*/*derived*, RR, and type-specific context
-  (confidence/score, timeframe, strength).
-- **Lifecycle events** (`notify_setup_event`): `🎯 Entry hit`, `❌ Invalidated`,
-  `⌛ Expired`. **The "approaching entry" heads-up is NOT sent** — only the actual entry and
-  the terminal outcomes, to keep the channel quiet.
+- **New setup** (`notify_new_setup` → setups channel): a freshly-created, still-live
+  **pushed-signal** setup.
+- **On-demand setup** (`notify_ondemand_setup` → on-demand channel): a freshly-created
+  **futures-plan** setup, with a plain-language explanation of what it is and how to use it.
+- **Lifecycle events** (`notify_setup_event`): `🎯 Entry hit`, `❌ Invalidated` (with its
+  `⚠️ reason`), `⌛ Expired` — for **every** source, routed to the **same channel the setup's
+  creation went to** (futures plans → on-demand channel, everything else → setups channel).
+  **The "approaching entry" heads-up is NOT sent** — only the actual entry and the terminal
+  outcomes.
+
+New-setup and lifecycle messages share **one body** (`setup_detail`), so they look identical:
+header line (event + **strategy**), coin · direction, **current price** (live HL mid at send
+time), entry zone, stop, the full TP ladder with each level tagged *partner*/*derived*, and an
+RR + context (confidence/score, timeframe, strength) footer.
 
 **Repeat suppression** (`announce_new_setups`): the partner re-sends near-identical setups
 constantly. Beyond exact dedup and supersedence, a new setup is only *messaged* if no similar
@@ -343,7 +363,8 @@ populated before the processing cron runs.
 | `TRADING_ANALYSIS_STREAM_TOKEN` | websocket | `partner:token,partner2:token2` |
 | `TELEGRAM_BOT_TOKEN` | notifications | from @BotFather; bot must be channel admin |
 | `TELEGRAM_CHAT_ID` | notifications | raw-signals channel |
-| `TELEGRAM_SETUPS_CHAT_ID` | notifications | processed-setups channel (falls back to above) |
+| `TELEGRAM_SETUPS_CHAT_ID` | notifications | pushed-signal setups channel (falls back to above) |
+| `TELEGRAM_ONDEMAND_CHAT_ID` | notifications | on-demand futures-plan channel (no fallback) |
 | `PARTNER_API_BASE` | on-demand cron | e.g. `https://xxxx.supabase.co/functions/v1` |
 | `PARTNER_API_CLIENT_ID` / `PARTNER_API_CLIENT_SECRET` | on-demand cron | client credentials |
 | `PARTNER_API_TOKEN` | on-demand cron | optional static-bearer override for tests |

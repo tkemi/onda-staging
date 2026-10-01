@@ -41,7 +41,12 @@ const tick = async (): Promise<void> => {
 
     // collect status changes, applied in bulk grouped by target status
     const changes = new Map<string, number[]>();
-    const notifications: Array<{setup: trade_setup; event: setup_event; price: number}> = [];
+    const notifications: Array<{
+        setup: trade_setup;
+        event: setup_event;
+        price: number;
+        reason?: string;
+    }> = [];
 
     for (const setup of setups) {
         const price = mids.get(setup.hl_symbol);
@@ -84,7 +89,7 @@ const tick = async (): Promise<void> => {
         // "armed" (approaching) is intentionally not notified - only the actual entry,
         // invalidation, and expiry are worth a message
         if (result.event && result.event !== "armed") {
-            notifications.push({setup, event: result.event, price: price ?? entry_low});
+            notifications.push({setup, event: result.event, price: price ?? entry_low, reason: result.reason});
         }
     }
 
@@ -99,9 +104,9 @@ const tick = async (): Promise<void> => {
     }
 
     // notify after the status is persisted, so a crash cannot double-fire a transition
-    for (const {setup, event, price} of notifications) {
+    for (const {setup, event, price, reason} of notifications) {
         try {
-            await notify_setup_event(setup, event, price);
+            await notify_setup_event(setup, event, price, reason);
         } catch (error: unknown) {
             console.error(`[monitor] notify failed for setup ${setup.id}:`, error);
         }

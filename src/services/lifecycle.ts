@@ -23,6 +23,8 @@ export interface eval_input {
 export interface eval_result {
     status: string;
     event: setup_event | null;
+    // a human-readable reason, set for invalidation
+    reason?: string;
 }
 
 // how close to the entry zone (fraction of the near-edge price) counts as "armed"
@@ -49,7 +51,11 @@ export const evaluate_setup = (setup: eval_input, price: number, now: Date): eva
         const past_stop = setup.direction === "long" ? price <= setup.sl : price >= setup.sl;
 
         if (past_stop) {
-            return {status: "invalidated", event: "invalidated"};
+            return {
+                status: "invalidated",
+                event: "invalidated",
+                reason: "Price reached the stop before entry was filled",
+            };
         }
     }
 
