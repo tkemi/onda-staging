@@ -81,15 +81,20 @@ const tick = async (): Promise<void> => {
             changes.set(result.status, ids);
         }
 
-        if (result.event) {
+        // "armed" (approaching) is intentionally not notified - only the actual entry,
+        // invalidation, and expiry are worth a message
+        if (result.event && result.event !== "armed") {
             notifications.push({setup, event: result.event, price: price ?? entry_low});
         }
     }
 
     for (const [status, ids] of changes) {
+        // stamp when the entry was first reached, for backtesting
+        const extra = status === "triggered" ? {triggered_at: now} : {};
+
         await db
             .update(trade_setups)
-            .set({status: status as trade_setup["status"]})
+            .set({status: status as trade_setup["status"], ...extra})
             .where(inArray(trade_setups.id, ids));
     }
 

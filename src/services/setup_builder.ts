@@ -98,6 +98,24 @@ export const parse_signal = (payload: unknown): parsed_signal | null => {
     };
 };
 
+// Quality gate for which parsed signals we actually turn into setups. Currently only
+// Liquidity Hunt is filtered: we keep A / A+ confidence with a score of 9 or higher, and
+// drop the weaker, noisier ones. Other sources always pass. PROVISIONAL thresholds.
+export const MIN_LIQUIDITY_HUNT_SCORE = 9;
+
+export const meets_quality = (signal: parsed_signal): boolean => {
+    if (signal.source_type !== "liquidity_hunt") {
+        return true;
+    }
+
+    const confidence = String(signal.data.confidence ?? "").toUpperCase();
+    const score = Number(signal.data.score);
+
+    return (confidence === "A" || confidence === "A+") &&
+        isFinite(score) &&
+        score >= MIN_LIQUIDITY_HUNT_SCORE;
+};
+
 export interface ladder_level {
     price: number;
     source: "partner" | "derived";

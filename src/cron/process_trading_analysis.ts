@@ -9,11 +9,13 @@ import {
     type trading_analysis_stream_message,
 } from "../db";
 import {
+    announce_new_setups,
     apply_supersedence,
     build_perp_setup_row,
+    fetch_all_mids,
     groups_of,
     hl_name_candidates,
-    notify_new_setup,
+    meets_quality,
     parse_signal,
     to_base_coin,
 } from "../services";
@@ -76,6 +78,11 @@ export const build_setup = (
     const signal = parse_signal(row.payload);
 
     if (!signal) {
+        return null;
+    }
+
+    // strategy-specific quality gate (e.g. Liquidity Hunt: A/A+ confidence, score > 9)
+    if (!meets_quality(signal)) {
         return null;
     }
 
@@ -163,7 +170,9 @@ const run = async (): Promise<void> => {
     const superseded = setups.length > 0 ? await apply_supersedence(groups_of(setups)) : 0;
 
     // announce freshly-created setups that are still live (not immediately superseded) to
-    // the user-facing setups channel
+    // the user-facing setups channel, suppressing near-identical repeats
+    let sent = 0;
+
     if (inserted.length > 0) {
         const live = await db
             .select({id: trade_setups.id})
@@ -173,23 +182,18 @@ const run = async (): Promise<void> => {
                 or(eq(trade_setups.status, "pending"), eq(trade_setups.status, "armed")),
             ));
         const live_ids = new Set(live.map((row) => row.id));
+        const live_setups = inserted.filter((setup) => live_ids.has(setup.id));
 
-        for (const setup of inserted) {
-            if (!live_ids.has(setup.id)) {
-                continue;
-            }
-
-            try {
-                await notify_new_setup(setup);
-            } catch (error: unknown) {
-                console.error(`[analysis] notify failed for setup ${setup.id}:`, error);
-            }
+        if (live_setups.length > 0) {
+            const mids = await fetch_all_mids();
+            sent = await announce_new_setups(live_setups, mids);
         }
     }
 
     console.log(
         `[analysis] processed ${rows.length} stream rows, produced ${setups.length} setups` +
-        (superseded > 0 ? `, superseded ${superseded}` : "")
+        (superseded > 0 ? `, superseded ${superseded}` : "") +
+        (sent > 0 ? `, announced ${sent}` : "")
     );
 };
 

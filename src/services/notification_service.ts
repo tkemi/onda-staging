@@ -39,12 +39,16 @@ const entry_str = (setup: trade_setup): string =>
         ? trim(setup.entry_low)
         : `${trim(setup.entry_low)} – ${trim(setup.entry_high)}`;
 
-const header = (setup: trade_setup): string =>
-    `${dot(setup.direction)} ${setup.direction.toUpperCase()} · <b>${escape_html(setup.base_coin)}</b> (${escape_html(setup.hl_symbol)})`;
+const header = (setup: trade_setup): string => {
+    // only show the venue symbol when it differs from the coin (e.g. spot "PURR/USDC")
+    const venue = setup.hl_symbol !== setup.base_coin ? ` (${escape_html(setup.hl_symbol)})` : "";
+
+    return `${dot(setup.direction)} <b>${escape_html(setup.base_coin)}</b> · ${setup.direction.toUpperCase()}${venue}`;
+};
 
 // a TP line with its partner/derived provenance
 const tp_line = (label: string, price: string | null, source: string | null): string =>
-    `${label} ${trim(price)}${source ? ` <i>(${source})</i>` : ""}`;
+    `${label}: ${trim(price)}${source ? ` <i>(${source})</i>` : ""}`;
 
 // small type-specific context line (confidence/score, timeframe, ...)
 const context_line = (setup: trade_setup): string | null => {
@@ -70,27 +74,48 @@ const context_line = (setup: trade_setup): string | null => {
     return parts.length ? parts.join(" · ") : null;
 };
 
-// Format a setup the way a user sees it: entry, stop, the full TP ladder (with which
-// levels are the partner's vs our derived ones), and RR.
-export const notify_new_setup = async (setup: trade_setup): Promise<void> => {
-    const lines = [
-        `📋 <b>New ${SOURCE_LABEL[setup.source_type]} setup</b>`,
+// Format a setup the way a user sees it: strategy, current price, entry, stop, the full TP
+// ladder (with which levels are the partner's vs our derived ones), and RR.
+export const notify_new_setup = async (
+    setup: trade_setup,
+    current_price?: number
+): Promise<void> => {
+    // blank strings become blank lines, giving the message breathing room in Telegram
+    const lines: string[] = [
+        `📋 <b>New Setup</b> · ${SOURCE_LABEL[setup.source_type]}`,
+        "",
         header(setup),
-        `Entry: <b>${entry_str(setup)}</b>`,
-        `Stop: ${trim(setup.sl)}`,
-        tp_line("TP1", setup.tp1, setup.tp1_source),
-        tp_line("TP2", setup.tp2, setup.tp2_source),
-        tp_line("TP3", setup.tp3, setup.tp3_source),
     ];
 
+    if (current_price !== undefined) {
+        lines.push(`💰 Current price: <b>${current_price}</b>`);
+    }
+
+    lines.push(
+        "",
+        `🎯 Entry: <b>${entry_str(setup)}</b>`,
+        `🛑 Stop: ${trim(setup.sl)}`,
+        "",
+        "📈 Targets:",
+        `   • ${tp_line("TP1", setup.tp1, setup.tp1_source)}`,
+        `   • ${tp_line("TP2", setup.tp2, setup.tp2_source)}`,
+        `   • ${tp_line("TP3", setup.tp3, setup.tp3_source)}`,
+    );
+
+    const footer: string[] = [];
+
     if (setup.risk_reward !== null) {
-        lines.push(`R:R ${trim(setup.risk_reward)}`);
+        footer.push(`R:R ${trim(setup.risk_reward)}`);
     }
 
     const context = context_line(setup);
 
     if (context) {
-        lines.push(context);
+        footer.push(context);
+    }
+
+    if (footer.length > 0) {
+        lines.push("", footer.join(" · "));
     }
 
     await send_setup_message(lines.join("\n"));
@@ -101,17 +126,19 @@ export const notify_setup_event = async (
     event: setup_event,
     price: number
 ): Promise<void> => {
-    const lines = [
+    const lines: string[] = [
         EVENT_HEADER[event],
+        "",
         header(setup),
-        `Price: ${price}`,
-        `Entry: ${entry_str(setup)}`,
+        `💰 Price: <b>${price}</b>`,
+        "",
+        `🎯 Entry: ${entry_str(setup)}`,
     ];
 
     if (event === "triggered") {
         lines.push(
-            `Stop: ${trim(setup.sl)}`,
-            `TP1 ${trim(setup.tp1)} · TP2 ${trim(setup.tp2)} · TP3 ${trim(setup.tp3)}`,
+            `🛑 Stop: ${trim(setup.sl)}`,
+            `📈 TP1: ${trim(setup.tp1)}  ·  TP2: ${trim(setup.tp2)}  ·  TP3: ${trim(setup.tp3)}`,
         );
     }
 

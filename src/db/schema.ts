@@ -186,6 +186,12 @@ export const trade_setups = pgTable(
         dedup_key: text("dedup_key").notNull(),
         generated_at: timestamp("generated_at", {withTimezone: true}).notNull(),
         expires_at: timestamp("expires_at", {withTimezone: true}),
+        // when price first reached the entry zone - the key field for backtesting
+        // (time-to-entry, and whether TPs/SL were hit afterwards)
+        triggered_at: timestamp("triggered_at", {withTimezone: true}),
+        // when this setup was announced to the setups channel; also used to suppress
+        // telegram spam for near-identical repeats
+        notified_at: timestamp("notified_at", {withTimezone: true}),
         created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
     },
     (table) => [

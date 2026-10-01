@@ -110,12 +110,17 @@ Prices are `numeric(40, 20)` — generous enough for BTC (~80k) and sub-cent mem
 1. Drains a batch of unprocessed `trading_analysis_stream` rows (oldest first).
 2. `parse_signal` extracts symbol / direction / entry / SL / raw TPs (and type-specific
    context), or skips the row if it isn't a usable directional setup.
-3. Resolves the Hyperliquid market (see [§6](#6-hyperliquid-market-filtering)); **drops
+3. **Quality gate** (`meets_quality`) — strategy-specific. Currently **Liquidity Hunt only
+   passes with confidence A/A+ and score ≥ 9**; the weaker, noisier ones are dropped. Other
+   sources always pass.
+4. Resolves the Hyperliquid market (see [§6](#6-hyperliquid-market-filtering)); **drops
    the signal if the coin isn't tradable on HL** (the raw row is still kept & marked
-   processed).
-4. Completes the TP ladder (see [§5](#5-the-tp-ladder--r-multiples)).
-5. Inserts into `trade_setups` with `onConflictDoNothing` on the dedup key.
-6. Marks the stream rows processed — all in one transaction.
+   processed). This is how we guarantee only Hyperliquid pairs become setups.
+5. Completes the TP ladder (see [§5](#5-the-tp-ladder--r-multiples)).
+6. Inserts into `trade_setups` with `onConflictDoNothing` on the dedup key.
+7. Marks the stream rows processed — all in one transaction.
+8. Announces the fresh, still-live setups to the setups channel, suppressing repeats
+   (see [§10](#10-notifications--two-telegram-channels)).
 
 Validated on real data: **15,674 raw messages → 865 distinct setups.**
 
@@ -228,9 +233,12 @@ Rules live in the **pure, tested** `evaluate_setup` (`src/services/lifecycle.ts`
 
 - **armed**: price within `ARM_THRESHOLD` (0.5%) of the entry zone's near edge.
 - **triggered**: price inside `[entry_low, entry_high]` → the "enter now" moment, which the
-  user acts on in the UI.
+  user acts on in the UI. The monitor stamps **`triggered_at`** here — the key field for
+  backtesting (time-to-entry, and whether TPs/SL were hit afterwards).
 - **invalidated**: price passed the stop side before entry was ever reached.
 - **expired**: `now > expires_at`.
+- **armed** transitions still happen internally but are **not notified** (no "approaching"
+  spam).
 - **superseded** is set by the processing crons (see [§7](#7-dedup--supersedence)), not the
   monitor; the monitor only ever acts on `pending`/`armed` setups, so a superseded one can
   never fire.
@@ -277,11 +285,18 @@ user executes it on Hyperliquid through the UI. The backend places no orders.
 - **Raw** (`send_analysis_signal`): the three pushed signal types formatted per type;
   **never echoes the partner's `authToken`**.
 - **Setups** (`notify_new_setup`): each freshly-created, still-live setup, the way a user
-  sees it — entry zone, stop, the full TP ladder with each level tagged *partner*/*derived*,
-  RR, and type-specific context (confidence/score, timeframe, strength). Only setups that
-  survive supersedence are announced.
-- **Lifecycle events** (`notify_setup_event`): `🎯 Entry hit`, `⏳ Approaching entry`,
-  `❌ Invalidated`, `⌛ Expired` — also to the setups channel.
+  sees it — **strategy**, **current price** (the live HL mid at send time), entry zone, stop,
+  the full TP ladder with each level tagged *partner*/*derived*, RR, and type-specific context
+  (confidence/score, timeframe, strength).
+- **Lifecycle events** (`notify_setup_event`): `🎯 Entry hit`, `❌ Invalidated`,
+  `⌛ Expired`. **The "approaching entry" heads-up is NOT sent** — only the actual entry and
+  the terminal outcomes, to keep the channel quiet.
+
+**Repeat suppression** (`announce_new_setups`): the partner re-sends near-identical setups
+constantly. Beyond exact dedup and supersedence, a new setup is only *messaged* if no similar
+one (same source, coin, direction, entry within 0.5%) was announced in the last 24h. Every
+announced/suppressed setup is stamped `notified_at`, so the next refresh of the same trade
+stays silent. Net effect: **one notification per distinct trade, not per re-send.**
 
 The setups channel falls back to `TELEGRAM_CHAT_ID` when `TELEGRAM_SETUPS_CHAT_ID` is unset,
 so one channel still works. **Per-user routing** (only the users following a setup, shaped by
@@ -367,6 +382,9 @@ These are implemented with sensible defaults but are explicitly **open for tunin
   if desired.
 - **Exit allocations & arm threshold** — the `EXIT_ALLOCATIONS` and `ARM_THRESHOLD`
   constants.
+- **Liquidity Hunt quality gate** — `meets_quality`: confidence A/A+ and score ≥
+  `MIN_LIQUIDITY_HUNT_SCORE` (9). Adjust to let more/fewer through.
+- **Repeat-notification window** — 0.5% entry similarity over 24h in `announce.ts`.
 
 ---
 
@@ -400,6 +418,7 @@ src/
     partner_api_service.ts             on-demand futures/spot API client
     lifecycle.ts                       evaluate_setup (pure)
     supersede.ts                       retire older near-identical setups
+    announce.ts                        notify new setups, suppress repeats
     policy.ts                          plan_for_user + defaults (pure)
     user_settings_service.ts           read/write user settings
     notification_service.ts            setup-event Telegram messages
