@@ -74,21 +74,19 @@ const context_line = (setup: trade_setup): string | null => {
     return parts.length ? parts.join(" · ") : null;
 };
 
-// Format a setup the way a user sees it: strategy, current price, entry, stop, the full TP
-// ladder (with which levels are the partner's vs our derived ones), and RR.
-export const notify_new_setup = async (
+// The shared message body used by both new-setup and lifecycle-event messages, so every
+// message looks the same: coin/direction, price, entry, stop, the full TP ladder (with each
+// level tagged partner/derived), and an RR + context footer. Blank strings render as blank
+// lines for breathing room in Telegram.
+const setup_detail = (
     setup: trade_setup,
-    current_price?: number
-): Promise<void> => {
-    // blank strings become blank lines, giving the message breathing room in Telegram
-    const lines: string[] = [
-        `📋 <b>New Setup</b> · ${SOURCE_LABEL[setup.source_type]}`,
-        "",
-        header(setup),
-    ];
+    price_label: string,
+    price?: number
+): string[] => {
+    const lines = [header(setup)];
 
-    if (current_price !== undefined) {
-        lines.push(`💰 Current price: <b>${current_price}</b>`);
+    if (price !== undefined) {
+        lines.push(`💰 ${price_label}: <b>${price}</b>`);
     }
 
     lines.push(
@@ -118,29 +116,35 @@ export const notify_new_setup = async (
         lines.push("", footer.join(" · "));
     }
 
+    return lines;
+};
+
+// A freshly-created setup, the way a user sees it in the UI.
+export const notify_new_setup = async (
+    setup: trade_setup,
+    current_price?: number
+): Promise<void> => {
+    const lines = [
+        `📋 <b>New Setup</b> · ${SOURCE_LABEL[setup.source_type]}`,
+        "",
+        ...setup_detail(setup, "Current price", current_price),
+    ];
+
     await send_setup_message(lines.join("\n"));
 };
 
+// A lifecycle transition (entry hit, invalidated, expired) - same full body as a new setup,
+// with the event and the strategy in the header.
 export const notify_setup_event = async (
     setup: trade_setup,
     event: setup_event,
     price: number
 ): Promise<void> => {
-    const lines: string[] = [
-        EVENT_HEADER[event],
+    const lines = [
+        `${EVENT_HEADER[event]} · ${SOURCE_LABEL[setup.source_type]}`,
         "",
-        header(setup),
-        `💰 Price: <b>${price}</b>`,
-        "",
-        `🎯 Entry: ${entry_str(setup)}`,
+        ...setup_detail(setup, "Price", price),
     ];
-
-    if (event === "triggered") {
-        lines.push(
-            `🛑 Stop: ${trim(setup.sl)}`,
-            `📈 TP1: ${trim(setup.tp1)}  ·  TP2: ${trim(setup.tp2)}  ·  TP3: ${trim(setup.tp3)}`,
-        );
-    }
 
     await send_setup_message(lines.join("\n"));
 };
