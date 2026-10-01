@@ -17,13 +17,14 @@ export interface eval_input {
     entry_low: number;
     entry_high: number;
     sl: number | null;
+    generated_at: Date;
     expires_at: Date | null;
 }
 
 export interface eval_result {
     status: string;
     event: setup_event | null;
-    // a human-readable reason, set for invalidation
+    // a human-readable reason, set for invalidation and expiry
     reason?: string;
 }
 
@@ -39,7 +40,15 @@ export const evaluate_setup = (setup: eval_input, price: number, now: Date): eva
     }
 
     if (setup.expires_at && now.getTime() > setup.expires_at.getTime()) {
-        return {status: "expired", event: "expired"};
+        const window_h = Math.round((setup.expires_at.getTime() - setup.generated_at.getTime()) / 3_600_000);
+        const window = window_h > 0 ? `${window_h}h` : "configured";
+
+        return {
+            status: "expired",
+            event: "expired",
+            reason: `The setup stayed open for its full ${window} validity window but price ` +
+                `never reached the entry zone, so it is no longer actionable and was closed.`,
+        };
     }
 
     if (price >= setup.entry_low && price <= setup.entry_high) {
@@ -54,7 +63,9 @@ export const evaluate_setup = (setup: eval_input, price: number, now: Date): eva
             return {
                 status: "invalidated",
                 event: "invalidated",
-                reason: "Price reached the stop before entry was filled",
+                reason: "Price moved through the stop-loss before ever reaching the entry zone. " +
+                    "Entering now would have meant an immediate stop-out, so the setup is no " +
+                    "longer valid and will not be triggered.",
             };
         }
     }

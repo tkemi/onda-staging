@@ -244,11 +244,18 @@ Rules live in the **pure, tested** `evaluate_setup` (`src/services/lifecycle.ts`
 - **triggered**: price inside `[entry_low, entry_high]` → the "enter now" moment, which the
   user acts on in the UI. The monitor stamps **`triggered_at`** here — the key field for
   backtesting (time-to-entry, and whether TPs/SL were hit afterwards).
-- **invalidated**: price passed the stop side before entry was ever reached. `evaluate_setup`
-  returns a **reason** with this event ("Price reached the stop before entry was filled"),
-  which the message shows as a `⚠️` line. The reason field is generic, ready for more
-  invalidation rules later (e.g. a Futures-Plan explicit invalidation price).
-- **expired**: `now > expires_at`.
+- **invalidated**: price passed the stop side before entry was ever reached.
+- **expired**: `now > expires_at` — price never reached the entry zone in time.
+
+Both **invalidated and expired carry a detailed human-readable `reason`** (from
+`evaluate_setup`), shown in the message as a `⚠️` line:
+- invalidated → "Price moved through the stop-loss before ever reaching the entry zone…"
+- expired → "The setup stayed open for its full **{N}h** validity window but price never
+  reached the entry zone…" — the window is computed per setup from `generated_at` →
+  `expires_at`, so it reflects the real TTL.
+
+The reason field is generic, ready for more rules later (e.g. a Futures-Plan explicit
+invalidation price).
 - **armed** transitions still happen internally but are **not notified** (no "approaching"
   spam).
 - **superseded** is set by the processing crons (see [§7](#7-dedup--supersedence)), not the

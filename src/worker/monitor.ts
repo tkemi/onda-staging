@@ -70,6 +70,7 @@ const tick = async (): Promise<void> => {
                 entry_low,
                 entry_high,
                 sl: to_number(setup.sl),
+                generated_at: setup.generated_at,
                 expires_at: setup.expires_at,
             },
             price ?? entry_low, // price only unused when expiring
