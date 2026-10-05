@@ -17,8 +17,20 @@
       "schedule": "* * * * *"
     },
     {
-      "command": "node dist/cron/sync_on_demand.js",
-      "schedule": "*/30 * * * *"
+      "command": "node dist/cron/sync_on_demand.js futures",
+      "schedule": "5 5 * * *"
+    },
+    {
+      "command": "node dist/cron/sync_on_demand.js futures",
+      "schedule": "5 12 * * *"
+    },
+    {
+      "command": "node dist/cron/sync_on_demand.js futures",
+      "schedule": "5 0 * * *"
+    },
+    {
+      "command": "node dist/cron/sync_on_demand.js spot",
+      "schedule": "0 9 * * *"
     }
   ]
 }

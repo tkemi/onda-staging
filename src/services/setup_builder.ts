@@ -209,11 +209,13 @@ export const dedup_key_for = (signal: parsed_signal, base_coin: string): string 
 // --- validity windows (provisional; to be tuned) ---------------------------
 // How long a setup stays actionable after it was generated, per source. These are
 // starting points to be revisited - see the invalidation discussion in the docs.
+// Pushed signals go stale and time-expire. Futures-plan zones deliberately have NO entry
+// here: they are invalidated only by price (hitting the stop), never by time - a planned
+// zone stays valid until price confirms or kills it.
 export const TTL_HOURS: Record<string, number> = {
     filter_mix: 24,
     liquidity_hunt: 24,
     signal_hub: 24,
-    futures_plan: 24,      // refreshed daily
 };
 
 export const expires_from = (generated_at: Date, source_type: string): Date | null => {

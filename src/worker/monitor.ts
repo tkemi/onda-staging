@@ -94,9 +94,23 @@ const tick = async (): Promise<void> => {
         }
     }
 
+    // short reason codes stored for backtesting ("how many invalidated, and why")
+    const CLOSE_REASON: Record<string, string> = {
+        invalidated: "stop_before_entry",
+        expired: "expired",
+    };
+
     for (const [status, ids] of changes) {
-        // stamp when the entry was first reached, for backtesting
-        const extra = status === "triggered" ? {triggered_at: now} : {};
+        const extra: Partial<trade_setup> = {};
+
+        if (status === "triggered") {
+            // when the entry was first reached, for backtesting
+            extra.triggered_at = now;
+        } else if (status === "invalidated" || status === "expired") {
+            // when and why the setup died, for backtesting
+            extra.closed_at = now;
+            extra.close_reason = CLOSE_REASON[status];
+        }
 
         await db
             .update(trade_setups)

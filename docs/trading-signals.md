@@ -126,12 +126,22 @@ Validated on real data: **15,674 raw messages → 865 distinct setups.**
 
 ### On-demand — `sync_on_demand` cron
 
-`src/cron/sync_on_demand.ts`, **every 30 minutes**. It builds:
+`src/cron/sync_on_demand.ts`, **a few scheduled times a day** (see `app.json`). Each run does a
+**full sweep** of every partner-supported coin (not the old rolling batch), paced to stay
+under the partner's **30 req/min** limit (`ONDEMAND_CALL_DELAY_MS`, default 2200ms ≈ 27/min,
+with a 60s back-off on a 429). It builds:
 
-- **Futures plans** → each response expands into **one `trade_setups` row per zone**
-  (long[] + short[]), `source_type = futures_plan`, dedup keyed also by timeframe.
+- **Futures plans** → each zone (long[] + short[]) is compared to the open zones we already
+  hold for that coin/direction. If its entry matches an existing zone (within
+  `FUTURES_ZONE_MATCH_PCT`, default 0.5%) we **strengthen** that zone — bump its `seen_count`
+  and refresh its validity — rather than storing a duplicate. A genuinely different entry
+  becomes a new zone. So a zone the partner keeps regenerating accrues a higher count = a
+  stronger, repeatedly-confirmed entry (shown as `⭐ strong (seen N×)` once N ≥ 3). This
+  replaces supersedence for futures. Only **newly-created** zones are announced; re-seen ones
+  strengthen silently. See `merge_or_create_futures_setup`.
 - **Spot zones** → one `accumulation_plans` row per coin, upserted (latest replaces the
-  previous).
+  previous), and posted to the **spot channel** (`TELEGRAM_SPOT_CHAT_ID`) at most once per
+  coin per day.
 
 > **Futures-plan setups are announced to their own channel** (`TELEGRAM_ONDEMAND_CHAT_ID`),
 > separate from the pushed-signal setups channel, via `announce_ondemand_setups` →
@@ -140,22 +150,13 @@ Validated on real data: **15,674 raw messages → 865 distinct setups.**
 > unset, the setups still land in `trade_setups` (for the UI) but are not posted. They are
 > also **monitored** like every other setup (see [§8](#8-monitoring--lifecycle)).
 
-Two realities shape how it runs: the partner **covers only a subset** of the coins HL lists
-(it returns **400** for the rest), and it **rate-limits** us (**429**). So the cron is
-stateful, via `partner_fetch_state` (one row per coin per kind):
-
-- **Unsupported coins are flagged** — a 400 sets `supported = false`, and that coin is never
-  queried again (until the flag is cleared manually).
-- **Each run only fetches stale coins** — `last_fetch_at` older than **24h** (`FRESH_MS`) —
-  **oldest first**, up to a per-run call budget (`ONDEMAND_MAX_CALLS`, default 40).
-- **On a 429 it stops early**; the coins it didn't reach stay "due" and are picked up by the
-  next run. Across the 48 runs a day, every supported coin refreshes within 24h while staying
-  under the partner's limit.
-- Transient errors (5xx / network) leave the coin due to retry; a success stamps
-  `last_fetch_at = now`.
-
-The budget is **shared across futures + spot** in a run, since the partner's rate limit is
-shared. Symbol set: `ONDEMAND_SYMBOLS` (explicit list) or, by default, derived from the HL
+Coverage is tracked in `partner_fetch_state` (one row per coin per kind): the partner
+**covers only a subset** of the coins HL lists and returns **400** for the rest, which sets
+`supported = false` so that coin is **never queried again** (until the flag is cleared
+manually). Each run sweeps **every supported coin** (plus any not-yet-seen coin, to discover
+coverage). Futures and spot are **separate scheduled runs** (one file, `futures`/`spot` arg,
+separate locks) whose times don't overlap, so each stays under the 30 req/min limit on its
+own. Symbol set: `ONDEMAND_SYMBOLS` (explicit list) or, by default, derived from the HL
 markets we support. Timeframe: `PARTNER_FUTURES_TIMEFRAME` (default `4H`).
 
 > **To re-enable a coin** the partner later starts covering, clear its flag:
@@ -244,8 +245,13 @@ Rules live in the **pure, tested** `evaluate_setup` (`src/services/lifecycle.ts`
 - **triggered**: price inside `[entry_low, entry_high]` → the "enter now" moment, which the
   user acts on in the UI. The monitor stamps **`triggered_at`** here — the key field for
   backtesting (time-to-entry, and whether TPs/SL were hit afterwards).
-- **invalidated**: price passed the stop side before entry was ever reached.
-- **expired**: `now > expires_at` — price never reached the entry zone in time.
+- **invalidated**: price passed the stop side before entry (long: price ≤ SL, short:
+  price ≥ SL). The monitor stamps **`closed_at`** and **`close_reason = 'stop_before_entry'`**.
+- **expired**: `now > expires_at` — stamps `closed_at` and `close_reason = 'expired'`.
+  **Futures-plan zones have no `expires_at`, so they never time-expire** — they live until
+  price confirms (triggered) or invalidates (hits the stop). Pushed signals still expire at
+  24h. (With two futures zones per side, the weaker/nearer one can invalidate on a wick while
+  the stronger/deeper one stays valid — each zone is tracked independently.)
 
 Both **invalidated and expired carry a detailed human-readable `reason`** (from
 `evaluate_setup`), shown in the message as a `⚠️` line:
@@ -265,6 +271,23 @@ invalidation price).
 Status is persisted **before** notifying, so a crash can't double-fire a transition. A
 `triggered` notification is the signal to the user to enter; managing the position
 afterwards (partial TPs, breakeven, trailing) happens in the UI per their settings.
+
+**Backtesting fields.** Every terminal transition is recorded on the row, so outcomes are
+queryable (not just seen in Telegram): `triggered_at` (entry reached), `closed_at` +
+`close_reason` (`stop_before_entry` / `expired`). Examples:
+```sql
+-- how many invalidated, and why
+select status, close_reason, count(*) from trade_setups
+where status in ('invalidated','expired') group by status, close_reason;
+
+-- invalidations by strategy
+select source_type, count(*) from trade_setups where status = 'invalidated'
+group by source_type order by 2 desc;
+
+-- time-to-entry for triggered setups
+select source_type, avg(triggered_at - generated_at) from trade_setups
+where triggered_at is not null group by source_type;
+```
 
 ---
 
@@ -301,6 +324,7 @@ user executes it on Hyperliquid through the UI. The backend places no orders.
 | Raw signals | `TELEGRAM_CHAT_ID` | every incoming partner delivery (ops/debug view) |
 | Setups | `TELEGRAM_SETUPS_CHAT_ID` | processed pushed-signal setups + lifecycle events |
 | On-demand | `TELEGRAM_ONDEMAND_CHAT_ID` | on-demand futures-plan setups (with explanation) |
+| Spot/swing | `TELEGRAM_SPOT_CHAT_ID` | spot accumulation plans (buy/sell ladders) |
 
 - **Raw** (`send_analysis_signal`): the three pushed signal types formatted per type;
   **never echoes the partner's `authToken`**.
@@ -308,6 +332,10 @@ user executes it on Hyperliquid through the UI. The backend places no orders.
   **pushed-signal** setup.
 - **On-demand setup** (`notify_ondemand_setup` → on-demand channel): a freshly-created
   **futures-plan** setup, with a plain-language explanation of what it is and how to use it.
+- **Spot/swing plan** (`notify_spot_plan` → spot channel): a spot accumulation plan — the
+  buy/sell ladders with per-zone allocation % and the deploy/reserve split, plus an
+  explanation. Zones shift with price every refresh, so it is posted **at most once per coin
+  per day** (throttled via `accumulation_plans.notified_at`).
 - **Lifecycle events** (`notify_setup_event`): `🎯 Entry hit`, `❌ Invalidated` (with its
   `⚠️ reason`), `⌛ Expired` — for **every** source, routed to the **same channel the setup's
   creation went to** (futures plans → on-demand channel, everything else → setups channel).
@@ -339,7 +367,8 @@ their settings) is future; for now the setups channel is the shared user-facing 
 | Monitor | `npm run monitor` (`worker`) | always | polls prices, fires events |
 | HL markets sync | `npm run hl:markets` | daily | populate before first processing |
 | Signal processing | `npm run analysis` | ~1 min | raw → trade_setups |
-| On-demand pull | `npm run ondemand` | every 30 min | futures plans + spot zones (stateful) |
+| Futures pull | `npm run futures` | 3×/day (scheduled) | full sweep of futures zones (strength-counted) |
+| Spot pull | `npm run spot` | 1×/day 09:00 UTC | full sweep of spot accumulation plans |
 | Migrations | `npm run db:migrate` | on deploy | runs automatically (Procfile `release`) |
 
 `*:dev` variants run from source via `tsx`.
@@ -355,8 +384,17 @@ Crons are added to `app.json` (alongside the existing sweeper/sync) when wiring 
 ```json
 { "command": "node dist/cron/sync_hl_markets.js",          "schedule": "0 3 * * *" },
 { "command": "node dist/cron/process_trading_analysis.js", "schedule": "* * * * *" },
-{ "command": "node dist/cron/sync_on_demand.js",           "schedule": "*/30 * * * *" }
+{ "command": "node dist/cron/sync_on_demand.js futures",   "schedule": "5 5 * * *" },
+{ "command": "node dist/cron/sync_on_demand.js futures",   "schedule": "5 12 * * *" },
+{ "command": "node dist/cron/sync_on_demand.js futures",   "schedule": "5 0 * * *" },
+{ "command": "node dist/cron/sync_on_demand.js spot",      "schedule": "0 9 * * *" }
 ```
+**Futures** sweeps 3×/day at **05:05 / 12:05 / 00:05 UTC** (= 07:05 / 14:05 / 02:05
+Europe/Belgrade on CEST). **Spot** runs once a day at **09:00 UTC**. Crons fire in the
+server's timezone (UTC). These are on-demand pulls (not a timed push window), so the ±1h
+shift during CET (winter) is harmless. The two share one file (`sync_on_demand.js`)
+dispatched by the `futures`/`spot` argument, with separate advisory locks; the schedules
+don't overlap, so each stays under the 30 req/min limit on its own.
 
 First deploy: after migrations, run `npm run hl:markets` once so the markets table is
 populated before the processing cron runs.
@@ -372,13 +410,14 @@ populated before the processing cron runs.
 | `TELEGRAM_CHAT_ID` | notifications | raw-signals channel |
 | `TELEGRAM_SETUPS_CHAT_ID` | notifications | pushed-signal setups channel (falls back to above) |
 | `TELEGRAM_ONDEMAND_CHAT_ID` | notifications | on-demand futures-plan channel (no fallback) |
+| `TELEGRAM_SPOT_CHAT_ID` | notifications | spot/swing accumulation channel (no fallback) |
 | `PARTNER_API_BASE` | on-demand cron | e.g. `https://xxxx.supabase.co/functions/v1` |
 | `PARTNER_API_CLIENT_ID` / `PARTNER_API_CLIENT_SECRET` | on-demand cron | client credentials |
 | `PARTNER_API_TOKEN` | on-demand cron | optional static-bearer override for tests |
 | `PARTNER_FUTURES_TIMEFRAME` | on-demand cron | default `4H` |
 | `ONDEMAND_SYMBOLS` | on-demand cron | optional explicit symbol list |
-| `ONDEMAND_MAX_CALLS` | on-demand cron | max partner calls per run; default `40` |
-| `ONDEMAND_CALL_DELAY_MS` | on-demand cron | delay between calls; default `500` |
+| `ONDEMAND_CALL_DELAY_MS` | on-demand cron | ms between partner calls; default `2200` (≈27/min, under the 30/min limit) |
+| `FUTURES_ZONE_MATCH_PCT` | on-demand cron | entry tolerance for "same zone"; default `0.005` (0.5%) |
 | `MONITOR_INTERVAL_MS` | monitor | default `5000` |
 
 **Partner API auth**: the on-demand client exchanges `PARTNER_API_CLIENT_ID` /

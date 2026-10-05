@@ -189,9 +189,19 @@ export const trade_setups = pgTable(
         // when price first reached the entry zone - the key field for backtesting
         // (time-to-entry, and whether TPs/SL were hit afterwards)
         triggered_at: timestamp("triggered_at", {withTimezone: true}),
+        // when the setup became terminal (invalidated / expired) and why - for backtesting
+        // "how many invalidated, and for what reason". close_reason is a short code, e.g.
+        // 'stop_before_entry' or 'expired'.
+        closed_at: timestamp("closed_at", {withTimezone: true}),
+        close_reason: text("close_reason"),
         // when this setup was announced to the setups channel; also used to suppress
         // telegram spam for near-identical repeats
         notified_at: timestamp("notified_at", {withTimezone: true}),
+        // how many times the partner has generated this same zone (futures plans). A higher
+        // count = a stronger, repeatedly-confirmed entry zone. Starts at 1.
+        seen_count: integer("seen_count").notNull().default(1),
+        // the most recent time this zone was seen again (extends its validity window)
+        last_seen_at: timestamp("last_seen_at", {withTimezone: true}),
         created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
     },
     (table) => [
@@ -224,6 +234,9 @@ export const accumulation_plans = pgTable(
         summary: jsonb("summary").notNull(),
         generated_at: timestamp("generated_at", {withTimezone: true}).notNull(),
         expires_at: timestamp("expires_at", {withTimezone: true}),
+        // last time this plan was posted to the spot channel; zones shift every refresh, so
+        // we throttle to at most one message per coin per day
+        notified_at: timestamp("notified_at", {withTimezone: true}),
         created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
     },
     (table) => [

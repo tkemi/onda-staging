@@ -14,3 +14,4 @@ export * from "./policy";
 export * from "./user_settings_service";
 export * from "./supersede";
 export * from "./announce";
+export * from "./futures_zones";

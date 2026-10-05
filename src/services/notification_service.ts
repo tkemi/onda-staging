@@ -1,6 +1,7 @@
 import type {trade_setup} from "../db";
 import type {setup_event} from "./lifecycle";
-import {escape_html, send_ondemand_message, send_setup_message} from "./telegram_service";
+import {escape_html, send_ondemand_message, send_setup_message, send_spot_message} from "./telegram_service";
+import {to_numeric} from "./setup_builder";
 
 // Processed, user-facing messages -> the setups Telegram channel. Two kinds:
 //   - notify_new_setup: a fresh setup, formatted the way a user would see it in the UI
@@ -139,8 +140,10 @@ export const notify_ondemand_setup = async (
     setup: trade_setup,
     current_price?: number
 ): Promise<void> => {
+    const strength = setup.seen_count >= 3 ? `  ⭐ strong (seen ${setup.seen_count}×)` : "";
+
     const lines = [
-        `🧭 <b>On-Demand Futures Plan</b>`,
+        `🧭 <b>On-Demand Futures Plan</b>${strength}`,
         "",
         ...setup_detail(setup, "Current price", current_price),
         "",
@@ -155,6 +158,80 @@ export const notify_ondemand_setup = async (
 
 // A lifecycle transition (entry hit, invalidated, expired) - same full body as a new setup,
 // with the event and the strategy in the header.
+// --- spot / swing accumulation plans ---------------------------------------
+
+interface spot_plan {
+    current_price: number | null;
+    buy_zones: unknown;
+    sell_zones: unknown;
+    summary: unknown;
+}
+
+const as_num = (value: unknown): number | null => {
+    const n = typeof value === "number" ? value : Number(value);
+
+    return isFinite(n) ? n : null;
+};
+
+const pct = (value: unknown): string => {
+    const n = as_num(value);
+
+    return n === null ? "?" : `${parseFloat(n.toPrecision(6))}%`;
+};
+
+const price_of = (value: unknown): string => {
+    const n = as_num(value);
+
+    return n === null ? "?" : to_numeric(n);
+};
+
+const zone_lines = (zones: unknown, sign: string): string[] => {
+    const list = Array.isArray(zones) ? zones as Array<Record<string, unknown>> : [];
+
+    return list.map((z) =>
+        `   • ${sign}${pct(z.percent)} → ${price_of(z.price)}  <i>(${pct(z.allocationPct)} alloc)</i>`);
+};
+
+// A spot / swing accumulation plan -> the spot channel, with a plain-language explanation.
+export const notify_spot_plan = async (base_coin: string, plan: spot_plan): Promise<void> => {
+    const summary = (plan.summary && typeof plan.summary === "object"
+        ? plan.summary : {}) as Record<string, unknown>;
+
+    const lines = [`🌊 <b>Spot / Swing Plan</b> · ${escape_html(base_coin)}`, ""];
+
+    if (plan.current_price !== null) {
+        lines.push(`💰 Current price: <b>${price_of(plan.current_price)}</b>`, "");
+    }
+
+    const buys = zone_lines(plan.buy_zones, "−");
+    const sells = zone_lines(plan.sell_zones, "+");
+
+    if (buys.length > 0) {
+        lines.push("🟢 <b>Buy zones</b> (ladder in as price dips):", ...buys, "");
+    }
+
+    if (sells.length > 0) {
+        lines.push("🔴 <b>Sell zones</b> (scale out as price rises):", ...sells, "");
+    }
+
+    const plan_bits: string[] = [];
+    if (summary.deployedPct != null) plan_bits.push(`deploy ${pct(summary.deployedPct)}`);
+    if (summary.reservePct != null) plan_bits.push(`reserve ${pct(summary.reservePct)}`);
+
+    if (plan_bits.length > 0) {
+        lines.push(plan_bits.join("  ·  "));
+    }
+
+    lines.push(
+        "",
+        "ℹ️ <i>A longer-horizon accumulation plan, not a timed entry. Ladder into the buy " +
+        "zones as price dips (allocate the shown % of your spot budget at each level), and " +
+        "scale out into the sell zones as it rises. The reserve is kept for deeper dips.</i>",
+    );
+
+    await send_spot_message(lines.join("\n"));
+};
+
 export const notify_setup_event = async (
     setup: trade_setup,
     event: setup_event,

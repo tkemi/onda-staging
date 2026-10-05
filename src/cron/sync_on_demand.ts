@@ -1,26 +1,24 @@
-import {and, eq, inArray, or, sql} from "drizzle-orm";
+import {eq, sql} from "drizzle-orm";
 import {
     accumulation_plans,
     close_db,
     db,
     hyperliquid_markets,
     partner_fetch_state,
-    trade_setups,
     type hyperliquid_market,
     type new_accumulation_plan,
     type new_partner_fetch_row,
-    type new_trade_setup,
     type partner_fetch_row,
+    type trade_setup,
 } from "../db";
 import {
     announce_ondemand_setups,
-    apply_supersedence,
-    build_perp_setup_row,
     fetch_all_mids,
     fetch_futures_plan,
     fetch_spot_zones,
-    groups_of,
     hl_name_candidates,
+    merge_or_create_futures_setup,
+    notify_spot_plan,
     parse_futures_plan,
     parse_spot_zones,
     to_base_coin,
@@ -30,18 +28,26 @@ import {
 import dotenv from "dotenv";
 dotenv.config();
 
-const ON_DEMAND_LOCK_KEY = 728414;
+// separate locks so a futures run and a spot run never block each other
+const FUTURES_LOCK_KEY = 728414;
+const SPOT_LOCK_KEY = 728415;
 
-// Runs every 30 min. Each run only fetches coins whose last successful fetch is older than
-// FRESH_MS (24h), oldest first, up to a call budget - and stops early if the partner
-// rate-limits us (429). Over many runs this refreshes every supported coin within 24h while
-// staying under the partner's limit. Coins the partner does not cover (400) are flagged and
-// never queried again.
+// Scheduled a few times a day (see app.json). Each run does a FULL SWEEP of every
+// partner-supported coin: it fetches the latest futures plan and compares each zone to what
+// we already hold — a re-seen zone bumps its strength count, a new entry becomes a new zone
+// (see merge_or_create_futures_setup). Coins the partner doesn't cover (400) are flagged and
+// skipped forever. Spot zones are refreshed the same way.
+//
+// The partner rate limit is 30 req/min, shared across the whole API, so every call is paced
+// (>= ONDEMAND_CALL_DELAY_MS apart) and a 429 backs off rather than hammering.
 const FUTURES_TIMEFRAME = process.env.PARTNER_FUTURES_TIMEFRAME ?? "4H";
-const FRESH_MS = 24 * 3_600_000;
 const SPOT_PLAN_TTL_HOURS = 24 * 7;
-const MAX_CALLS_PER_RUN = Number(process.env.ONDEMAND_MAX_CALLS ?? 40);
-const CALL_DELAY_MS = Number(process.env.ONDEMAND_CALL_DELAY_MS ?? 500);
+// ~27 req/min, safely under the 30/min limit
+const CALL_DELAY_MS = Number(process.env.ONDEMAND_CALL_DELAY_MS ?? 2200);
+const RATE_BACKOFF_MS = 60_000;
+const MAX_429_RETRIES = 3;
+// zones shift with price, so spot plans post to the channel at most once per coin per day
+const SPOT_NOTIFY_MS = 24 * 3_600_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -81,14 +87,13 @@ interface candidate {
     symbol: string;
 }
 
-// Candidates due for a fetch: supported, and stale beyond the freshness window; oldest
-// first (never-fetched sort first). Honours an explicit ONDEMAND_SYMBOLS override.
-const due_candidates = (
+// Every supported coin (plus any not-yet-seen coin, to discover coverage); unsupported
+// coins are skipped. Honours an explicit ONDEMAND_SYMBOLS override.
+const supported_candidates = (
     index: Map<string, hyperliquid_market>,
     state: Map<string, partner_fetch_row>
 ): candidate[] => {
     const configured = process.env.ONDEMAND_SYMBOLS;
-    const now = Date.now();
 
     const all: candidate[] = configured
         ? configured.split(",").map((s) => s.trim()).filter(Boolean).flatMap((symbol) => {
@@ -101,24 +106,11 @@ const due_candidates = (
             symbol: to_partner_symbol(market.base_coin),
         }));
 
-    return all
-        .filter((c) => {
-            const st = state.get(c.base_coin);
+    return all.filter((c) => {
+        const st = state.get(c.base_coin);
 
-            if (st && !st.supported) {
-                return false;
-            }
-
-            const last = st?.last_fetch_at ? st.last_fetch_at.getTime() : 0;
-
-            return now - last >= FRESH_MS;
-        })
-        .sort((a, b) => {
-            const la = state.get(a.base_coin)?.last_fetch_at?.getTime() ?? 0;
-            const lb = state.get(b.base_coin)?.last_fetch_at?.getTime() ?? 0;
-
-            return la - lb;
-        });
+        return !(st && !st.supported);
+    });
 };
 
 const record_state = async (
@@ -135,34 +127,40 @@ const record_state = async (
         .onConflictDoUpdate({target: [partner_fetch_state.kind, partner_fetch_state.base_coin], set});
 };
 
-interface run_ctx {
-    budget: number;
-    rate_limited: boolean;
-}
+// Pace a partner call to stay under 30 req/min and retry a 429 after backing off, so a
+// momentary throttle doesn't drop the coin from this sweep.
+let last_call_at = 0;
 
-// Apply the common status handling; returns true when the caller should process res.data.
-const handle_status = async (
-    ctx: run_ctx,
-    kind: "perp" | "spot",
-    c: candidate,
-    res: api_result
-): Promise<boolean> => {
-    if (res.status === 429) {
-        ctx.rate_limited = true;
-        await record_state(kind, c.base_coin, c.symbol, {last_status: 429});
+const paced = async (fn: () => Promise<api_result>): Promise<api_result> => {
+    const gap = CALL_DELAY_MS - (Date.now() - last_call_at);
 
-        return false;
+    if (gap > 0) {
+        await sleep(gap);
     }
 
+    let res = await fn();
+    last_call_at = Date.now();
+
+    for (let i = 0; res.status === 429 && i < MAX_429_RETRIES; i++) {
+        console.warn("[on-demand] 429 rate-limited, backing off 60s");
+        await sleep(RATE_BACKOFF_MS);
+        res = await fn();
+        last_call_at = Date.now();
+    }
+
+    return res;
+};
+
+// Record fetch state from a response; returns true when res.data should be processed.
+const handle_status = async (kind: "perp" | "spot", c: candidate, res: api_result): Promise<boolean> => {
     if (res.status === 400) {
-        // partner does not cover this coin - flag it so we never query it again
         await record_state(kind, c.base_coin, c.symbol, {supported: false, last_status: 400});
 
         return false;
     }
 
     if (!res.ok) {
-        // transient (5xx / network): leave it due, just note the status
+        // transient (429 after retries, 5xx, network): leave supported, note the status
         await record_state(kind, c.base_coin, c.symbol, {last_status: res.status});
 
         return false;
@@ -177,22 +175,18 @@ const handle_status = async (
     return true;
 };
 
-const sync_futures = async (ctx: run_ctx, index: Map<string, hyperliquid_market>): Promise<void> => {
+const sync_futures = async (index: Map<string, hyperliquid_market>): Promise<void> => {
     const state = await load_state("perp");
-    const due = due_candidates(index, state);
-    const rows: new_trade_setup[] = [];
+    const due = supported_candidates(index, state);
+    const new_setups: trade_setup[] = [];
     let fetched = 0;
+    let created = 0;
+    let strengthened = 0;
 
     for (const c of due) {
-        if (ctx.rate_limited || ctx.budget <= 0) {
-            break;
-        }
+        const res = await paced(() => fetch_futures_plan(c.symbol, FUTURES_TIMEFRAME));
 
-        ctx.budget--;
-        const res = await fetch_futures_plan(c.symbol, FUTURES_TIMEFRAME);
-        await sleep(CALL_DELAY_MS);
-
-        if (!(await handle_status(ctx, "perp", c, res))) {
+        if (!(await handle_status("perp", c, res))) {
             continue;
         }
 
@@ -205,7 +199,7 @@ const sync_futures = async (ctx: run_ctx, index: Map<string, hyperliquid_market>
                 continue;
             }
 
-            rows.push(build_perp_setup_row({
+            const result = await merge_or_create_futures_setup({
                 source_type: "futures_plan",
                 symbol: input.symbol,
                 direction: input.direction,
@@ -217,55 +211,43 @@ const sync_futures = async (ctx: run_ctx, index: Map<string, hyperliquid_market>
                 data: input.data,
                 generated_at: input.generated_at,
                 dedup_extra: FUTURES_TIMEFRAME,
-            }, market));
-        }
-    }
+            }, market);
 
-    let announced = 0;
+            if (!result) {
+                continue;
+            }
 
-    if (rows.length > 0) {
-        const inserted = await db.insert(trade_setups).values(rows).onConflictDoNothing().returning();
-        await apply_supersedence(groups_of(rows));
-
-        // announce the newly-created, still-live futures setups to the on-demand channel,
-        // suppressing near-identical repeats (no-op if TELEGRAM_ONDEMAND_CHAT_ID is unset)
-        if (inserted.length > 0) {
-            const live = await db
-                .select({id: trade_setups.id})
-                .from(trade_setups)
-                .where(and(
-                    inArray(trade_setups.id, inserted.map((r) => r.id)),
-                    or(eq(trade_setups.status, "pending"), eq(trade_setups.status, "armed")),
-                ));
-            const live_ids = new Set(live.map((r) => r.id));
-            const live_setups = inserted.filter((r) => live_ids.has(r.id));
-
-            if (live_setups.length > 0) {
-                const mids = await fetch_all_mids();
-                announced = await announce_ondemand_setups(live_setups, mids);
+            if (result.created) {
+                created++;
+                new_setups.push(result.setup);
+            } else {
+                strengthened++;
             }
         }
     }
 
-    console.log(`[on-demand] futures: ${due.length} due, ${fetched} fetched -> ${rows.length} setups` +
-        (announced > 0 ? `, announced ${announced}` : ""));
+    // announce only the genuinely new zones (repeats/strengthened ones stay silent)
+    let announced = 0;
+
+    if (new_setups.length > 0) {
+        const mids = await fetch_all_mids();
+        announced = await announce_ondemand_setups(new_setups, mids);
+    }
+
+    console.log(`[on-demand] futures: ${due.length} supported, ${fetched} fetched -> ` +
+        `${created} new, ${strengthened} strengthened, announced ${announced}`);
 };
 
-const sync_spot = async (ctx: run_ctx, index: Map<string, hyperliquid_market>): Promise<void> => {
+const sync_spot = async (index: Map<string, hyperliquid_market>): Promise<void> => {
     const state = await load_state("spot");
-    const due = due_candidates(index, state);
+    const due = supported_candidates(index, state);
     let stored = 0;
+    let announced = 0;
 
     for (const c of due) {
-        if (ctx.rate_limited || ctx.budget <= 0) {
-            break;
-        }
+        const res = await paced(() => fetch_spot_zones(c.symbol));
 
-        ctx.budget--;
-        const res = await fetch_spot_zones(c.symbol);
-        await sleep(CALL_DELAY_MS);
-
-        if (!(await handle_status(ctx, "spot", c, res))) {
+        if (!(await handle_status("spot", c, res))) {
             continue;
         }
 
@@ -275,6 +257,14 @@ const sync_spot = async (ctx: run_ctx, index: Map<string, hyperliquid_market>): 
         if (!plan || !market) {
             continue;
         }
+
+        // read the previous notify time before upserting (the upsert preserves notified_at,
+        // since `row` does not set it)
+        const [prev] = await db
+            .select({notified_at: accumulation_plans.notified_at})
+            .from(accumulation_plans)
+            .where(eq(accumulation_plans.base_coin, market.base_coin))
+            .limit(1);
 
         const row: new_accumulation_plan = {
             symbol: plan.symbol,
@@ -295,46 +285,73 @@ const sync_spot = async (ctx: run_ctx, index: Map<string, hyperliquid_market>): 
             .onConflictDoUpdate({target: accumulation_plans.base_coin, set: row});
 
         stored++;
+
+        const last = prev?.notified_at ? prev.notified_at.getTime() : 0;
+
+        if (Date.now() - last >= SPOT_NOTIFY_MS) {
+            await notify_spot_plan(market.base_coin, plan);
+            await db
+                .update(accumulation_plans)
+                .set({notified_at: new Date()})
+                .where(eq(accumulation_plans.base_coin, market.base_coin));
+            announced++;
+        }
     }
 
-    console.log(`[on-demand] spot: ${due.length} due, ${stored} plans`);
+    console.log(`[on-demand] spot: ${due.length} supported, ${stored} plans` +
+        (announced > 0 ? `, announced ${announced}` : ""));
 };
 
-export const sync_on_demand = async (): Promise<void> => {
-    const lock = await db.execute(sql`select pg_try_advisory_lock(${ON_DEMAND_LOCK_KEY}) as locked`);
+const with_lock = async (key: number, label: string, fn: () => Promise<void>): Promise<void> => {
+    const lock = await db.execute(sql`select pg_try_advisory_lock(${key}) as locked`);
     const locked = (lock.rows[0] as {locked: boolean} | undefined)?.locked;
 
     if (!locked) {
-        console.log("[on-demand] another run is already in progress, skipping");
+        console.log(`[on-demand] another ${label} run is already in progress, skipping`);
 
         return;
     }
 
     try {
-        const [perp_index, spot_index] = await Promise.all([load_markets("perp"), load_markets("spot")]);
+        await fn();
+    } finally {
+        await db.execute(sql`select pg_advisory_unlock(${key})`);
+    }
+};
 
-        if (perp_index.size === 0) {
-            console.error("[on-demand] no hyperliquid markets loaded, skipping");
+// Futures sweep (scheduled a few times a day).
+export const run_futures_sync = (): Promise<void> =>
+    with_lock(FUTURES_LOCK_KEY, "futures", async () => {
+        const index = await load_markets("perp");
+
+        if (index.size === 0) {
+            console.error("[on-demand] no hyperliquid perp markets loaded, skipping");
 
             return;
         }
 
-        // shared call budget across both kinds, since the partner rate-limit is shared
-        const ctx: run_ctx = {budget: MAX_CALLS_PER_RUN, rate_limited: false};
+        await sync_futures(index);
+    });
 
-        await sync_futures(ctx, perp_index);
-        await sync_spot(ctx, spot_index);
+// Spot sweep (scheduled once a day).
+export const run_spot_sync = (): Promise<void> =>
+    with_lock(SPOT_LOCK_KEY, "spot", async () => {
+        const index = await load_markets("spot");
 
-        if (ctx.rate_limited) {
-            console.log("[on-demand] stopped early: partner rate limit (429) - remaining coins resume next run");
+        if (index.size === 0) {
+            console.error("[on-demand] no hyperliquid spot markets loaded, skipping");
+
+            return;
         }
-    } finally {
-        await db.execute(sql`select pg_advisory_unlock(${ON_DEMAND_LOCK_KEY})`);
-    }
-};
+
+        await sync_spot(index);
+    });
 
 if (require.main === module) {
-    sync_on_demand()
+    // `node dist/cron/sync_on_demand.js spot` runs spot; anything else runs futures
+    const run = process.argv[2] === "spot" ? run_spot_sync : run_futures_sync;
+
+    run()
         .then(() => close_db())
         .then(() => process.exit(0))
         .catch((error: unknown) => {

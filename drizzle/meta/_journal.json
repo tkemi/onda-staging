@@ -120,6 +120,27 @@
       "when": 1790850286996,
       "tag": "0016_setup_timestamps",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790933003701,
+      "tag": "0017_spot_plan_notified",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791211514871,
+      "tag": "0018_setup_seen_count",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791218190952,
+      "tag": "0019_setup_close_reason",
+      "breakpoints": true
     }
   ]
 }

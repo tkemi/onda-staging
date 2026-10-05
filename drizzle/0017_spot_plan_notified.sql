@@ -1,0 +1,1 @@
+ALTER TABLE "accumulation_plans" ADD COLUMN "notified_at" timestamp with time zone;
