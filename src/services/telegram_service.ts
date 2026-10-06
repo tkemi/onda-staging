@@ -2,8 +2,9 @@
 // channel (with "Post Messages"). Three channels:
 //   TELEGRAM_CHAT_ID           - raw incoming partner signals (ops/debug view)
 //   TELEGRAM_SETUPS_CHAT_ID    - processed, user-facing pushed-signal setups + lifecycle
-//   TELEGRAM_ONDEMAND_CHAT_ID  - on-demand (futures-plan) setups
-//   TELEGRAM_SPOT_CHAT_ID      - spot / swing accumulation plans
+//   TELEGRAM_ONDEMAND_CHAT_ID       - on-demand (futures-plan) setups
+//   TELEGRAM_SPOT_CHAT_ID           - spot / swing accumulation plans
+//   TELEGRAM_LIQUIDITY_HUNT_CHAT_ID - Liquidity Hunt setups (falls back to the setups channel)
 // The setups channel falls back to TELEGRAM_CHAT_ID when unset, so one channel still works.
 // The on-demand and spot channels do NOT fall back: if unset, those messages are simply not
 // posted (the data still lands in the DB), so nothing appears until you configure them.
@@ -18,6 +19,11 @@ const setups_chat = (): string | undefined =>
 const ondemand_chat = (): string | undefined => process.env.TELEGRAM_ONDEMAND_CHAT_ID;
 
 const spot_chat = (): string | undefined => process.env.TELEGRAM_SPOT_CHAT_ID;
+
+// Liquidity Hunt gets its own channel; falls back to the setups channel when unset so these
+// signals are never silently dropped.
+const liquidity_hunt_chat = (): string | undefined =>
+    process.env.TELEGRAM_LIQUIDITY_HUNT_CHAT_ID ?? setups_chat();
 
 // Telegram's HTML parse_mode only treats & < > specially, so escaping those three is
 // enough to keep arbitrary partner text from breaking the message.
@@ -247,5 +253,9 @@ export const send_ondemand_message = (text: string): Promise<boolean> => post_me
 // Send a spot / swing accumulation plan -> the spot channel. No fallback: skipped when
 // TELEGRAM_SPOT_CHAT_ID is unset.
 export const send_spot_message = (text: string): Promise<boolean> => post_message(text, spot_chat());
+
+// Send a Liquidity Hunt setup / event -> the Liquidity Hunt channel (or setups as fallback).
+export const send_liquidity_hunt_message = (text: string): Promise<boolean> =>
+    post_message(text, liquidity_hunt_chat());
 
 export {escape_html};

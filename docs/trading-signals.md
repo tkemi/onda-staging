@@ -322,7 +322,8 @@ user executes it on Hyperliquid through the UI. The backend places no orders.
 | Channel | Env | Content |
 |---|---|---|
 | Raw signals | `TELEGRAM_CHAT_ID` | every incoming partner delivery (ops/debug view) |
-| Setups | `TELEGRAM_SETUPS_CHAT_ID` | processed pushed-signal setups + lifecycle events |
+| Setups | `TELEGRAM_SETUPS_CHAT_ID` | Filter Mix / Signal Hub setups + lifecycle events |
+| Liquidity Hunt | `TELEGRAM_LIQUIDITY_HUNT_CHAT_ID` | Liquidity Hunt setups + events (falls back to setups) |
 | On-demand | `TELEGRAM_ONDEMAND_CHAT_ID` | on-demand futures-plan setups (with explanation) |
 | Spot/swing | `TELEGRAM_SPOT_CHAT_ID` | spot accumulation plans (buy/sell ladders) |
 
@@ -411,6 +412,7 @@ populated before the processing cron runs.
 | `TELEGRAM_SETUPS_CHAT_ID` | notifications | pushed-signal setups channel (falls back to above) |
 | `TELEGRAM_ONDEMAND_CHAT_ID` | notifications | on-demand futures-plan channel (no fallback) |
 | `TELEGRAM_SPOT_CHAT_ID` | notifications | spot/swing accumulation channel (no fallback) |
+| `TELEGRAM_LIQUIDITY_HUNT_CHAT_ID` | notifications | Liquidity Hunt channel (falls back to setups) |
 | `PARTNER_API_BASE` | on-demand cron | e.g. `https://xxxx.supabase.co/functions/v1` |
 | `PARTNER_API_CLIENT_ID` / `PARTNER_API_CLIENT_SECRET` | on-demand cron | client credentials |
 | `PARTNER_API_TOKEN` | on-demand cron | optional static-bearer override for tests |

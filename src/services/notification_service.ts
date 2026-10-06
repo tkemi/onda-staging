@@ -1,6 +1,12 @@
 import type {trade_setup} from "../db";
 import type {setup_event} from "./lifecycle";
-import {escape_html, send_ondemand_message, send_setup_message, send_spot_message} from "./telegram_service";
+import {
+    escape_html,
+    send_liquidity_hunt_message,
+    send_ondemand_message,
+    send_setup_message,
+    send_spot_message,
+} from "./telegram_service";
 import {to_numeric} from "./setup_builder";
 
 // Processed, user-facing messages -> the setups Telegram channel. Two kinds:
@@ -14,6 +20,13 @@ const SOURCE_LABEL: Record<trade_setup["source_type"], string> = {
     signal_hub: "Signal Hub",
     futures_plan: "Futures Plan",
 };
+
+// Which channel a pushed/on-demand setup's messages go to, by source. Liquidity Hunt has
+// its own channel; futures plans their on-demand channel; everything else the setups channel.
+const sender_for = (source_type: trade_setup["source_type"]): (text: string) => Promise<boolean> =>
+    source_type === "liquidity_hunt" ? send_liquidity_hunt_message
+        : source_type === "futures_plan" ? send_ondemand_message
+            : send_setup_message;
 
 const EVENT_HEADER: Record<setup_event, string> = {
     armed: "⏳ <b>Approaching entry</b>",
@@ -131,7 +144,7 @@ export const notify_new_setup = async (
         ...setup_detail(setup, "Current price", current_price),
     ];
 
-    await send_setup_message(lines.join("\n"));
+    await sender_for(setup.source_type)(lines.join("\n"));
 };
 
 // An on-demand futures-plan setup -> its own channel, with a short plain-language
@@ -248,6 +261,5 @@ export const notify_setup_event = async (
     lines.push("", ...setup_detail(setup, "Price", price));
 
     // keep each setup's events in the same channel its creation went to
-    const send = setup.source_type === "futures_plan" ? send_ondemand_message : send_setup_message;
-    await send(lines.join("\n"));
+    await sender_for(setup.source_type)(lines.join("\n"));
 };
