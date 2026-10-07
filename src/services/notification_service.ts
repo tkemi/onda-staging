@@ -251,6 +251,12 @@ export const notify_setup_event = async (
     price: number,
     reason?: string
 ): Promise<void> => {
+    // Liquidity Hunt: don't post invalidations to its channel (its status is still recorded
+    // in the DB for backtesting — we just skip the message).
+    if (setup.source_type === "liquidity_hunt" && event === "invalidated") {
+        return;
+    }
+
     const lines = [`${EVENT_HEADER[event]} · ${SOURCE_LABEL[setup.source_type]}`];
 
     // explain why the setup was invalidated
