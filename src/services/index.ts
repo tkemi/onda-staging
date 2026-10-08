@@ -21,3 +21,4 @@ export * from "./hl_api_service";
 export * from "./fills_service";
 export * from "./hl_sync_service";
 export * from "./orders_service";
+export * from "./privy_service";

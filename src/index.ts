@@ -6,6 +6,7 @@ import {
     get_activity_router,
     indexer_webhook_router,
     get_wallet_router,
+    privy_webhook_router,
     quicknode_webhook_router
 } from "./routes";
 import {check_db_connection, close_db} from "./db";
@@ -37,6 +38,10 @@ app.use(express.json({
 
 app.use("/api/webhooks", quicknode_webhook_router);
 app.use("/api/webhooks/indexer", indexer_webhook_router);
+// Privy tells us a wallet exists; we register it and put it on the quicknode watchlist.
+// Must sit behind express.json()'s verify hook, which stashes the raw bytes the svix
+// signature is computed over.
+app.use("/api/webhooks/privy", privy_webhook_router);
 
 app.use("/api/create-wallet", create_wallet_router);
 app.use("/api/wallet", get_wallet_router);
