@@ -1,5 +1,6 @@
 import {
     boolean,
+    date,
     index,
     integer,
     jsonb,
@@ -296,7 +297,14 @@ export type new_partner_fetch_row = typeof partner_fetch_state.$inferInsert;
 // `users`, matching deposits/sweeps: the ingest paths must not depend on a
 // user lookup succeeding.
 
-export const activity_type = pgEnum("activity_type", ["deposit-on-chain", "withdraw-on-chain"]);
+export const activity_type = pgEnum("activity_type", [
+    "deposit-on-chain",
+    "withdraw-on-chain",
+    "open-position",
+    "close-position",
+    "liquidate-position",
+    "open-limit-order",
+]);
 
 // What lives in `data`, per activity type.
 //
@@ -342,14 +350,155 @@ export interface withdraw_activity_data {
     destination: string;
 }
 
+// A perp position being opened or closed on hyperliquid. Written by the fills pipeline -
+// see src/services/fills_service.ts - from the fills the trades firehose and the backfill
+// cron both feed into.
+//
+// NOTE the amounts here break the _wei convention the on-chain shapes above use, on
+// purpose: hyperliquid quotes everything as a DECIMAL string ("0.0194" ETH, "2567.7" USD),
+// not in base units, and there is no token contract to read decimals from - a perp is not
+// an ERC-20. They are still strings for the same reason as everywhere else: a JSON number
+// is a double and would lose digits. The client renders them as-is.
+export interface perp_activity_data {
+    // the market, as hyperliquid names it: "ETH", "BTC", "HYPE"
+    coin: string;
+    direction: "long" | "short";
+    // absolute size in coin units, never negative - `direction` carries the sign
+    size: string;
+    // The leverage the position was opened at, e.g. 10 for a 10x long. Observed from
+    // clearinghouseState WHILE THE POSITION IS OPEN - that is the only place it exists, a
+    // fill does not carry it, and the live snapshot is deleted the moment the position
+    // flattens. Null on any position that closed before we were watching, and NOT
+    // recoverable from fill history afterwards.
+    leverage: number | null;
+    // the HyperCore transaction hash. It resolves on hyperliquid's own explorer and on
+    // NO evm explorer - perps never touch an evm chain, so this is not an etherscan link
+    tx_hash: string | null;
+}
+
+export interface open_position_activity_data extends perp_activity_data {
+    // size-weighted average over every fill that built the position. NOT the price on the
+    // signed order - a frontend market order pads its limit for slippage, so the signed
+    // price and the fill price differ
+    entry_price: string;
+    // the collateral committed at entry: (size x entry_price) / leverage. Null when the
+    // leverage was never observed. Note this is the margin AT ENTRY - hyperliquid's live
+    // `marginUsed` can exceed it if the user tops up an isolated position afterwards
+    margin: string | null;
+    // what the OPENING fills cost. The close row's `fees` is the position's total
+    fees: string;
+}
+
+export interface close_position_activity_data extends perp_activity_data {
+    // both ends of the trade on one row, so the client needs no lookup back to the open
+    entry_price: string;
+    exit_price: string;
+    // realized_pnl as a percentage, to 4 decimals, e.g. "-0.4170".
+    //
+    // The denominator is the ENTRY NOTIONAL (size x entry_price), not the margin, which
+    // makes it leverage-free and computable for every position we will ever hold. Note
+    // this is NOT the percentage hyperliquid's own ui shows - that one divides by margin,
+    // so at 10x it reads ten times larger. `leverage` is on the row if you want to derive
+    // it client-side.
+    realized_pnl_pct: string;
+    // fees paid on the fills that closed this position, as a positive number
+    fees: string;
+    // gross_pnl - fees. This is the number a user should see; a small winning trade is
+    // routinely a net loss once taker fees are in, so the two cannot be collapsed
+    realized_pnl: string;
+}
+
+// A limit order placed on hyperliquid's book.
+//
+// The only activity type with a real LIFECYCLE, which is what `activities.status` exists
+// for: `pending` while it rests, `confirmed` once fully filled, `failed` when cancelled or
+// rejected. One row that changes, not three rows accumulating.
+//
+// It needs no websocket to observe. A privy server wallet has no exportable key, so the
+// only way one of our users can place an order at all is through this backend - we are the
+// originator, and the row is written in the same request that calls the exchange. The
+// trades firehose then reports the FILL like any other (a resting order that fills is a
+// trade, and the public message carries both counterparties, maker included), and the
+// fill's `oid` joins it straight back to this row.
+export interface open_limit_order_activity_data {
+    coin: string;
+    direction: "long" | "short";
+    // the order's full size, in coin units
+    size: string;
+    // how much of it has filled so far: the sum of `sz` over fills carrying this `oid`.
+    // Equals `size` once status is "confirmed". A partially filled order stays "pending"
+    // with this below `size`, because status has no "partial" value and a number says
+    // more than an extra enum label would.
+    filled_size: string;
+    // the price the order rests at - NOT a fill price. A market order's signed limit is
+    // padded for slippage and never matches its fill.
+    limit_price: string;
+    leverage: number | null;
+    // collateral the order would commit if it filled: (size x limit_price) / leverage
+    margin: string | null;
+    // a reduce-only order cannot open or increase a position, only close one
+    reduce_only: boolean;
+    // hyperliquid's order id. Unique per order, so it is this row's handle: the fill that
+    // closes the loop carries the same oid, and advancing the status is an exact join
+    // rather than a match on price and time.
+    oid: string;
+    // null at placement: hyperliquid's order response returns {resting: {oid}}, not a
+    // hash. The HyperCore hash only appears later, via historicalOrders.
+    tx_hash: string | null;
+}
+
 // Keyed by the enum so the two cannot drift: a new activity_type has no valid
 // `data` shape until it is added here.
 export interface activity_data_by_type {
     "deposit-on-chain": deposit_activity_data;
     "withdraw-on-chain": withdraw_activity_data;
+    "open-position": open_position_activity_data;
+    "close-position": close_position_activity_data;
+    // same fields as a close; the TYPE is what says it was forced
+    "liquidate-position": close_position_activity_data;
+    "open-limit-order": open_limit_order_activity_data;
 }
 
 export type activity_data = activity_data_by_type[keyof activity_data_by_type];
+
+// A limit order placed on hyperliquid's book.
+//
+// The only activity type with a real LIFECYCLE, which is what `activities.status` exists
+// for: `pending` while it rests, `confirmed` once fully filled, `failed` when cancelled or
+// rejected. One row that changes, not three rows accumulating.
+//
+// It needs no websocket to observe. A privy server wallet has no exportable key, so the
+// only way one of our users can place an order at all is through this backend - we are the
+// originator, and the row is written in the same request that calls the exchange. The
+// trades firehose then reports the FILL like any other (a resting order that fills is a
+// trade, and the public message carries both counterparties, maker included), and the
+// fill's `oid` joins it straight back to this row.
+export interface open_limit_order_activity_data {
+    coin: string;
+    direction: "long" | "short";
+    // the order's full size, in coin units
+    size: string;
+    // how much of it has filled so far: the sum of `sz` over fills carrying this `oid`.
+    // Equals `size` once status is "confirmed". A partially filled order stays "pending"
+    // with this below `size`, because status has no "partial" value and a number says
+    // more than an extra enum label would.
+    filled_size: string;
+    // the price the order rests at - NOT a fill price. A market order's signed limit is
+    // padded for slippage and never matches its fill.
+    limit_price: string;
+    leverage: number | null;
+    // collateral the order would commit if it filled: (size x limit_price) / leverage
+    margin: string | null;
+    // a reduce-only order cannot open or increase a position, only close one
+    reduce_only: boolean;
+    // hyperliquid's order id. Unique per order, so it is this row's handle: the fill that
+    // closes the loop carries the same oid, and advancing the status is an exact join
+    // rather than a match on price and time.
+    oid: string;
+    // null at placement: hyperliquid's order response returns {resting: {oid}}, not a
+    // hash. The HyperCore hash only appears later, via historicalOrders.
+    tx_hash: string | null;
+}
 
 export const activities = pgTable(
     "activities",
@@ -569,3 +718,240 @@ export const backtest_summary = pgTable(
 
 export type backtest_summary_row = typeof backtest_summary.$inferSelect;
 export type new_backtest_summary_row = typeof backtest_summary.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Hyperliquid perps: fills, positions, and the ingest cursor
+// ---------------------------------------------------------------------------
+//
+// There is no contract to index. Perp matching happens inside HyperCore's state
+// transition, so a fill is not a transaction and emits no event - a HyperCore block
+// carries orders and cancels only. The two places fills exist are a node's own output
+// and the per-user API, so `fills` below is populated from `userFillsByTime`, triggered by
+// the public trades firehose. `tid` makes a redelivery free. See src/ws/hl_trades_stream.ts.
+
+export const position_close_reason = pgEnum("position_close_reason", [
+    "closed",
+    "liquidation",
+    "backstop",
+    "flip",
+]);
+
+// Append-only, the source of truth. One row per fill, exactly as hyperliquid reported it.
+// Nothing is derived here - `positions` is rebuilt from these rows, so a bad derivation
+// is always re-runnable without re-fetching anything.
+export const fills = pgTable(
+    "fills",
+    {
+        id: serial("id").primaryKey(),
+        privy_address: text("privy_address").notNull(),
+        // hyperliquid's unique id for a partial fill of an order. THE idempotency key:
+        // the firehose path, the backfill cron and a websocket snapshot replay all insert
+        // the same fill, and only one row may survive. Scoped by address because a single
+        // match has two sides and both could be our users.
+        tid: numeric("tid", {precision: 78, scale: 0}).notNull(),
+        // market name for perps ("ETH"), or a pair/index for spot ("PURR/USDC", "@157")
+        coin: text("coin").notNull(),
+        // hyperliquid's own label: "Open Long", "Close Short", "Long > Short", and for
+        // spot just "Buy"/"Sell". Kept raw rather than parsed into an enum - a new value
+        // must not break ingestion, and the reconstruction works off sizes anyway.
+        dir: text("dir").notNull(),
+        // "B" = buy, "A" = sell
+        side: text("side").notNull(),
+        px: numeric("px", {precision: 38, scale: 10}).notNull(),
+        sz: numeric("sz", {precision: 38, scale: 10}).notNull(),
+        // the position size BEFORE this fill, signed. With `side` and `sz` this gives the
+        // size after, which is what the position state machine replays.
+        start_position: numeric("start_position", {precision: 38, scale: 10}).notNull(),
+        // hyperliquid's closedPnl: gross, before fees, and 0 on a fill that only opens
+        closed_pnl: numeric("closed_pnl", {precision: 38, scale: 10}).notNull(),
+        // negative means a maker rebate
+        fee: numeric("fee", {precision: 38, scale: 10}).notNull(),
+        // charged by the UI builder; ours if we ever enable one, and it comes out of the
+        // user's pnl just like `fee` does
+        builder_fee: numeric("builder_fee", {precision: 38, scale: 10}),
+        fee_token: text("fee_token").notNull(),
+        oid: numeric("oid", {precision: 78, scale: 0}),
+        // null unless the fill was forced: "market" is a normal liquidation, "backstop" is
+        // the backstop liquidator taking over. The feed should read differently for each.
+        liquidation_method: text("liquidation_method"),
+        // a TWAP arrives as many small fills sharing one id. Without this, one TWAP entry
+        // looks like fifty separate position changes in the feed.
+        twap_id: numeric("twap_id", {precision: 78, scale: 0}),
+        // the HyperCore transaction hash. Resolves on hyperliquid's explorer only.
+        tx_hash: text("tx_hash"),
+        // when the fill happened on hyperliquid, not when we stored it
+        filled_at: timestamp("filled_at", {withTimezone: true}).notNull(),
+        created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("fills_address_tid_key").on(table.privy_address, table.tid),
+        // the replay reads one market's fills for one user, in order
+        index("fills_replay_idx").on(table.privy_address, table.coin, table.filled_at),
+        // the daily pnl rollup reads a user's fills over a date range
+        index("fills_user_time_idx").on(table.privy_address, table.filled_at.desc()),
+    ]
+);
+
+export type fill = typeof fills.$inferSelect;
+export type new_fill = typeof fills.$inferInsert;
+
+// One row per position, from open to close - the round trip, with everything the UI
+// needs about it. Derived entirely from `fills` by replaying them per (address, coin),
+// so this table can be dropped and rebuilt at any time.
+export const positions = pgTable(
+    "positions",
+    {
+        id: serial("id").primaryKey(),
+        privy_address: text("privy_address").notNull(),
+        coin: text("coin").notNull(),
+        direction: text("direction").notNull(),
+        // the tid of the fill that opened this position. Makes the replay idempotent:
+        // re-running it upserts the same rows instead of duplicating them.
+        open_tid: numeric("open_tid", {precision: 78, scale: 0}).notNull(),
+        // the tid of the fill that flattened it; null while still open
+        close_tid: numeric("close_tid", {precision: 78, scale: 0}),
+        opened_at: timestamp("opened_at", {withTimezone: true}).notNull(),
+        closed_at: timestamp("closed_at", {withTimezone: true}),
+        close_reason: position_close_reason("close_reason"),
+        // size-weighted average of the fills that built the position, and of the fills
+        // that unwound it
+        entry_px: numeric("entry_px", {precision: 38, scale: 10}).notNull(),
+        exit_px: numeric("exit_px", {precision: 38, scale: 10}),
+        // the largest absolute size the position ever reached, and what is open right
+        // now (0 once closed)
+        max_size: numeric("max_size", {precision: 38, scale: 10}).notNull(),
+        open_size: numeric("open_size", {precision: 38, scale: 10}).notNull(),
+        // summed over this position's fills. gross_pnl is hyperliquid's closedPnl;
+        // realized_pnl is gross_pnl - fees, which is what the user actually made.
+        gross_pnl: numeric("gross_pnl", {precision: 38, scale: 10}).notNull().default("0"),
+        fees: numeric("fees", {precision: 38, scale: 10}).notNull().default("0"),
+        realized_pnl: numeric("realized_pnl", {precision: 38, scale: 10}).notNull().default("0"),
+        // Observed from clearinghouseState WHILE THE POSITION IS OPEN, because that is the
+        // only place it exists - a fill does not carry leverage, and the live snapshot is
+        // deleted the moment the position flattens. Null on any position that closed before
+        // this was captured, and not recoverable from fill history afterwards.
+        leverage_value: integer("leverage_value"),
+        leverage_type: text("leverage_type"),
+        updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+        created_at: timestamp("created_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("positions_open_tid_key").on(table.privy_address, table.coin, table.open_tid),
+        // a user's trade history, newest first
+        index("positions_user_idx").on(table.privy_address, table.opened_at.desc()),
+        // "who has something open" - the set the sentinel and gap recovery poll
+        index("positions_still_open_idx").on(table.closed_at, table.privy_address),
+    ]
+);
+
+export type position = typeof positions.$inferSelect;
+export type new_position = typeof positions.$inferInsert;
+
+// Where fill ingestion got to, per user, so a sync resumes exactly instead of refetching
+// everything: `last_fill_time` is passed straight back as the next `startTime`.
+//
+// NOTE the trades firehose has no replay on reconnect. The stream re-syncs users with an
+// open position when it reconnects, which covers a dropped socket inside a live process -
+// but a process that is down entirely (a deploy, a crash) has no scheduled sweep behind it
+// any more, so a trade made during that window is only picked up when that user next
+// trades. There is deliberately no cron.
+export const hl_cursors = pgTable(
+    "hl_cursors",
+    {
+        privy_address: text("privy_address").primaryKey(),
+        // ms since epoch of the newest fill we hold. The next request asks for
+        // startTime = this value, and `tid` discards the boundary fill we already have.
+        last_fill_time: numeric("last_fill_time", {precision: 78, scale: 0}).notNull().default("0"),
+        // set once the first full history sweep has completed for this user, so the
+        // backfill can tell "new user, fetch everything" from "caught up, fetch the tail"
+        is_backfilled: boolean("is_backfilled").notNull().default(false),
+        last_synced_at: timestamp("last_synced_at", {withTimezone: true}),
+        last_error: text("last_error"),
+    }
+);
+
+export type hl_cursor = typeof hl_cursors.$inferSelect;
+export type new_hl_cursor = typeof hl_cursors.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Live state, straight from clearinghouseState
+// ---------------------------------------------------------------------------
+//
+// `fills` and `positions` above are the HISTORY - what happened, derived from fills,
+// exact, and the basis for realized pnl. These two tables are the PRESENT: hyperliquid's
+// own view of the account right now, including the one number fills can never give us,
+// unrealized pnl on a position that is still open.
+//
+// Both are overwritten on every poll, never appended to. One clearinghouseState call
+// (weight 2, the cheapest request on the api) refreshes a user's account row and all of
+// their position rows at once.
+
+// Account-level state. One row per user, replaced on each poll.
+export const hl_accounts = pgTable("hl_accounts", {
+    privy_address: text("privy_address").primaryKey(),
+    // total equity: cash plus unrealized pnl on every open position. This is the number
+    // the daily pnl calendar diffs - see src/cron/pnl_snapshot.ts.
+    account_value: numeric("account_value", {precision: 38, scale: 10}).notNull(),
+    // notional of all open positions, and the cash leg
+    total_ntl_pos: numeric("total_ntl_pos", {precision: 38, scale: 10}).notNull(),
+    total_raw_usd: numeric("total_raw_usd", {precision: 38, scale: 10}).notNull(),
+    total_margin_used: numeric("total_margin_used", {precision: 38, scale: 10}).notNull(),
+    // what the user could withdraw right now
+    withdrawable: numeric("withdrawable", {precision: 38, scale: 10}).notNull(),
+    // hash of every open position's coin:szi. `szi` moves ONLY on a fill - mark price
+    // changes unrealizedPnl and positionValue but never the size - so a change in this
+    // digest means the user traded. That makes the weight-2 call a fill detector, and
+    // it is what the sentinel in the backfill cron compares against.
+    positions_digest: text("positions_digest").notNull().default(""),
+    // hyperliquid's own timestamp on the response, not our clock
+    snapshot_at: timestamp("snapshot_at", {withTimezone: true}).notNull(),
+    updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+});
+
+export type hl_account = typeof hl_accounts.$inferSelect;
+export type new_hl_account = typeof hl_accounts.$inferInsert;
+
+// Every currently open position, with the live metrics only hyperliquid can compute.
+// A row exists while the position does and is deleted once it is flat, so this table is
+// always "what is open right now" with no filtering needed.
+export const position_snapshots = pgTable(
+    "position_snapshots",
+    {
+        id: serial("id").primaryKey(),
+        privy_address: text("privy_address").notNull(),
+        coin: text("coin").notNull(),
+        // signed size as hyperliquid reports it: negative is short. `direction` and
+        // `size` below are the same thing split up, for a feed that should not do maths.
+        szi: numeric("szi", {precision: 38, scale: 10}).notNull(),
+        direction: text("direction").notNull(),
+        size: numeric("size", {precision: 38, scale: 10}).notNull(),
+        entry_px: numeric("entry_px", {precision: 38, scale: 10}).notNull(),
+        // current notional at mark price
+        position_value: numeric("position_value", {precision: 38, scale: 10}).notNull(),
+        // THE field that does not exist anywhere in fill history: mark-to-market on an
+        // open position. A day where a position moved but nothing closed shows 0 realized
+        // pnl and a large unrealized one.
+        unrealized_pnl: numeric("unrealized_pnl", {precision: 38, scale: 10}).notNull(),
+        // null when hyperliquid cannot compute one (no position risk)
+        liquidation_px: numeric("liquidation_px", {precision: 38, scale: 10}),
+        margin_used: numeric("margin_used", {precision: 38, scale: 10}).notNull(),
+        // "cross" or "isolated"
+        leverage_type: text("leverage_type").notNull(),
+        leverage_value: integer("leverage_value").notNull(),
+        max_leverage: integer("max_leverage").notNull(),
+        // funding is a real cost of carry and is NOT in closedPnl, so a position held
+        // through funding has pnl that fills alone cannot explain
+        cum_funding_all_time: numeric("cum_funding_all_time", {precision: 38, scale: 10}).notNull(),
+        cum_funding_since_open: numeric("cum_funding_since_open", {precision: 38, scale: 10}).notNull(),
+        cum_funding_since_change: numeric("cum_funding_since_change", {precision: 38, scale: 10}).notNull(),
+        snapshot_at: timestamp("snapshot_at", {withTimezone: true}).notNull(),
+        updated_at: timestamp("updated_at", {withTimezone: true}).notNull().defaultNow(),
+    },
+    (table) => [
+        uniqueIndex("position_snapshots_address_coin_key").on(table.privy_address, table.coin),
+        index("position_snapshots_user_idx").on(table.privy_address),
+    ]
+);
+
+export type position_snapshot = typeof position_snapshots.$inferSelect;
+export type new_position_snapshot = typeof position_snapshots.$inferInsert;

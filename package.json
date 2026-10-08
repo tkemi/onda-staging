@@ -30,7 +30,9 @@
     "monitor:dev": "tsx src/worker/monitor.ts",
     "hl": "tsx src/cron/hl_balance.ts",
     "dev": "npm run build && npm run serve",
-    "start": "node dist"
+    "start": "node dist",
+    "stream": "npm run build && node dist/stream.js",
+    "stream:dev": "tsx src/stream.ts"
   },
   "keywords": [
     "onda-backend"
@@ -40,6 +42,7 @@
     "node": ">=22.12"
   },
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.33.3",
     "@privy-io/node": "^0.34.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",

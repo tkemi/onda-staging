@@ -17,16 +17,42 @@ export interface activity_filter {
 
 // --- the response contract -------------------------------------------------
 
-const base_activity = z.object({
+// What EVERY activity carries, whatever its kind.
+const base_event = z.object({
     id: z.string(),
     status: z.enum(["pending", "failed", "confirmed"]),
+    // epoch SECONDS, not milliseconds and not an ISO string. The client multiplies by
+    // 1000 for new Date(); a value near 1.79e9 is seconds, near 1.79e12 is milliseconds.
+    created_at: z.number().int(),
+});
+
+// Movements of an ERC-20 across a chain: they have a token, and an amount in that token's
+// smallest unit. Perp events below do NOT - a perp is not a token and there is no contract
+// to read decimals from - so they build on base_event instead.
+const base_activity = base_event.extend({
     amount_wei: z.string(),
     token_address: z.string(),
     token_decimals: z.number().int(),
     token_symbol: z.string(),
-    // epoch SECONDS, not milliseconds and not an ISO string. The client multiplies by
-    // 1000 for new Date(); a value near 1.79e9 is seconds, near 1.79e12 is milliseconds.
-    created_at: z.number().int(),
+    tx_hash: z.string().nullable(),
+});
+
+// Shared by both perp events. Amounts here are DECIMAL strings exactly as hyperliquid
+// quotes them ("0.0194" ETH, "2567.7" USD), not base units - but still strings, because a
+// JSON number is a double and would lose digits. The client renders them as-is.
+const base_perp = base_event.extend({
+    // the market as hyperliquid names it: "BTC", "ETH", "HYPE". A HIP-3 builder market is
+    // prefixed with its dex, e.g. "xyz:SP500"
+    coin: z.string(),
+    direction: z.enum(["long", "short"]),
+    // absolute, never negative - `direction` carries the sign
+    size: z.string(),
+    // the leverage the position was opened at: 10 for a 10x long. Null when it was never
+    // observed - leverage lives only in clearinghouseState and only while the position is
+    // open, so anything that closed before we were watching has none, permanently.
+    leverage: z.number().int().nullable(),
+    // a HyperCore transaction hash. It resolves on hyperliquid's explorer and on NO evm
+    // explorer, so this must not be rendered as an etherscan/arbiscan link
     tx_hash: z.string().nullable(),
 });
 
@@ -42,6 +68,44 @@ export const activity_schema = z.discriminatedUnion("type", [
         destination: z.string(),
         // optional here, unlike a deposit's, per the shape the frontend consumes
         tx_hash: z.string().nullish(),
+    }),
+    base_perp.extend({
+        type: z.literal("open-position"),
+        // size-weighted average over every fill that built the position
+        entry_price: z.string(),
+        // collateral committed at entry: (size x entry_price) / leverage. Null when the
+        // leverage was never observed
+        margin: z.string().nullable(),
+        // what the OPENING fills cost; the close row's `fees` is the position total
+        fees: z.string(),
+    }),
+    base_perp.extend({
+        type: z.literal("close-position"),
+        // both ends of the trade on one row
+        entry_price: z.string(),
+        exit_price: z.string(),
+        // fees paid over this position's fills, positive
+        fees: z.string(),
+        // gross_pnl - fees, and THE number to show the user. Every one of our first four
+        // real trades was a net loss while three were gross wins - taker fees decide small
+        // trades, so these cannot be collapsed into one figure.
+        realized_pnl: z.string(),
+        // the same figure as a percentage of the ENTRY NOTIONAL (size x entry_price), to
+        // 4 decimals: "-0.1103". Leverage-free, so present on every close. NOT the figure
+        // hyperliquid's own ui shows - that divides by margin, so at 10x it reads ten
+        // times larger; derive that client-side from `leverage` if you want to match.
+        realized_pnl_pct: z.string(),
+    }),
+    // A FORCED close. Identical fields to close-position: the type is the whole
+    // difference, so the feed renders it differently with no flag to read. Covers both of
+    // hyperliquid's liquidation methods, market and backstop.
+    base_perp.extend({
+        type: z.literal("liquidate-position"),
+        entry_price: z.string(),
+        exit_price: z.string(),
+        fees: z.string(),
+        realized_pnl: z.string(),
+        realized_pnl_pct: z.string(),
     }),
 ]);
 
