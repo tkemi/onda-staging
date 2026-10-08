@@ -22,11 +22,20 @@ import {register_user, resolve_privy_wallet_id, verify_privy_webhook} from "../s
 // evm addresses. A solana or tron wallet on the same Privy user is not ours to watch.
 const ETHEREUM = "ethereum";
 
+// Privy's own LinkedAccountBaseWalletType. Everything else on linked_accounts is an auth
+// method, not a wallet.
+const WALLET_TYPES = new Set(["wallet", "smart_wallet"]);
+
 // The slice of Privy's payload we actually use. Loose on purpose - Privy sends dozens of
 // event types and will add more, and an unexpected shape must not 500 a delivery that svix
 // will then retry forever.
 const walletSchema = z.object({
     address: z.string(),
+    // "wallet" or "smart_wallet" for a wallet; a linked account can equally be "email",
+    // "phone", "google_oauth", "passkey" and a dozen others, and `address` on an email
+    // account holds the email itself - so this discriminator is what keeps a signup
+    // address out of the users table
+    type: z.string().optional(),
     chain_type: z.string().optional(),
     // the base wallet type does not guarantee an id, so it is optional here and resolved
     // from Privy's api when missing
@@ -45,10 +54,13 @@ const headersSchema = z.object({
     "svix-signature": z.string().min(1),
 });
 
-// What we register from. `user.wallet_created` is the event that matters: it fires with the
-// wallet that was just made. `user.created` carries the user's linked accounts, which for a
-// user created WITH a wallet already includes it - so handling both means we do not miss a
-// registration depending on which event Privy sends first.
+// What we register from.
+//
+// `user.wallet_created` is THE event. On an email-first signup, `user.created` fires before
+// any wallet exists - its linked_accounts holds only the email - so it can never register
+// anyone on its own. It is still handled because a user created WITH a wallet already has
+// it in linked_accounts, and handling both costs nothing: registration is idempotent, so
+// whichever event arrives first wins and the other is a no-op.
 const REGISTERING_EVENTS = new Set(["user.wallet_created", "user.created"]);
 
 interface candidate {
@@ -68,10 +80,16 @@ const wallets_in = (event: {wallet?: {address: string; chain_type?: string; id?:
             return;
         }
 
-        const {address, chain_type, id} = parsed.data;
+        const {address, type, chain_type, id} = parsed.data;
 
-        // chain_type is absent on some shapes; an 0x address of the right length is the
-        // fallback test, and isAddress also rejects a malformed one
+        // A linked account is only a wallet if it says so. An email account carries the
+        // email in `address`, which isAddress would reject anyway, but relying on that
+        // would be incidental rather than deliberate.
+        if (type && !WALLET_TYPES.has(type)) {
+            return;
+        }
+
+        // chain_type is absent on some shapes; a well-formed 0x address is the fallback
         const is_evm = chain_type ? chain_type === ETHEREUM : isAddress(address);
 
         if (!is_evm || !isAddress(address)) {
