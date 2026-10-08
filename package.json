@@ -24,6 +24,8 @@
     "futures:dev": "tsx src/cron/sync_on_demand.ts futures",
     "spot": "npm run build && node dist/cron/sync_on_demand.js spot",
     "spot:dev": "tsx src/cron/sync_on_demand.ts spot",
+    "backtest": "npm run build && node dist/cron/backtest.js",
+    "backtest:dev": "tsx src/cron/backtest.ts",
     "monitor": "node dist/worker/monitor.js",
     "monitor:dev": "tsx src/worker/monitor.ts",
     "hl": "tsx src/cron/hl_balance.ts",

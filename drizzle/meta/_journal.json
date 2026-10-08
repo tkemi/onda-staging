@@ -141,6 +141,13 @@
       "when": 1791218190952,
       "tag": "0019_setup_close_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791381023306,
+      "tag": "0020_backtest_tables",
+      "breakpoints": true
     }
   ]
 }

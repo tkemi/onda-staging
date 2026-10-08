@@ -453,3 +453,119 @@ export const user_trade_settings = pgTable("user_trade_settings", {
 
 export type user_trade_setting = typeof user_trade_settings.$inferSelect;
 export type new_user_trade_setting = typeof user_trade_settings.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Backtesting
+// ---------------------------------------------------------------------------
+//
+// A backtest replays historical Hyperliquid candles against stored trade_setups to measure
+// how they would have performed. One run computes every source_type x mode:
+//   - mode "as_traded": respects our live rules (invalidated / expired = no trade)
+//   - mode "take_all":  ignores invalidation & expiry (take every setup that reaches entry)
+// Results: per-setup detail (backtest_results) + per type x mode summary (backtest_summary).
+
+const metric = (name: string) => numeric(name, {precision: 20, scale: 6});
+
+export const backtest_runs = pgTable("backtest_runs", {
+    id: serial("id").primaryKey(),
+    started_at: timestamp("started_at", {withTimezone: true}).notNull().defaultNow(),
+    window_start: timestamp("window_start", {withTimezone: true}).notNull(),
+    window_end: timestamp("window_end", {withTimezone: true}).notNull(),
+    // {margin_usd, leverage, trailing_pct, alloc, interval, ...}
+    params: jsonb("params").notNull(),
+    notes: text("notes"),
+});
+
+export type backtest_run = typeof backtest_runs.$inferSelect;
+export type new_backtest_run = typeof backtest_runs.$inferInsert;
+
+export const backtest_results = pgTable(
+    "backtest_results",
+    {
+        id: serial("id").primaryKey(),
+        run_id: integer("run_id").notNull(),
+        setup_id: integer("setup_id").notNull(),
+        source_type: text("source_type").notNull(),
+        mode: text("mode").notNull(),
+        direction: text("direction").notNull(),
+
+        entered: boolean("entered").notNull(),
+        entry_at: timestamp("entry_at", {withTimezone: true}),
+        time_to_entry_min: metric("time_to_entry_min"),
+
+        sl_hit: boolean("sl_hit").notNull().default(false),
+        tp1_hit: boolean("tp1_hit").notNull().default(false),
+        tp2_hit: boolean("tp2_hit").notNull().default(false),
+        tp3_hit: boolean("tp3_hit").notNull().default(false),
+        sl_at: timestamp("sl_at", {withTimezone: true}),
+        tp1_at: timestamp("tp1_at", {withTimezone: true}),
+        tp2_at: timestamp("tp2_at", {withTimezone: true}),
+        tp3_at: timestamp("tp3_at", {withTimezone: true}),
+
+        max_tp: integer("max_tp").notNull().default(0),
+        mae_r: metric("mae_r"),
+        mfe_r: metric("mfe_r"),
+        // invalidated | expired | no_entry | sl | tp1 | tp2 | tp3 | open
+        outcome: text("outcome").notNull(),
+        // when the position fully closed (for concurrency), null if never entered/still open
+        resolved_at: timestamp("resolved_at", {withTimezone: true}),
+
+        tp1_source: text("tp1_source"),
+        tp2_source: text("tp2_source"),
+        tp3_source: text("tp3_source"),
+
+        // per-policy pnl for this trade: {tp1,tp2,tp3,scaleout} -> {r, pct, usd}
+        policies: jsonb("policies").notNull(),
+    },
+    (table) => [
+        index("backtest_results_run_idx").on(table.run_id, table.source_type, table.mode),
+        uniqueIndex("backtest_results_unique").on(table.run_id, table.setup_id, table.mode),
+    ]
+);
+
+export type backtest_result = typeof backtest_results.$inferSelect;
+export type new_backtest_result = typeof backtest_results.$inferInsert;
+
+export const backtest_summary = pgTable(
+    "backtest_summary",
+    {
+        id: serial("id").primaryKey(),
+        run_id: integer("run_id").notNull(),
+        source_type: text("source_type").notNull(),
+        mode: text("mode").notNull(),
+
+        total: integer("total").notNull(),
+        entered: integer("entered").notNull(),
+        invalidated: integer("invalidated").notNull(),
+        expired: integer("expired").notNull(),
+        no_entry: integer("no_entry").notNull(),
+        open_trades: integer("open_trades").notNull(),
+        entry_rate: metric("entry_rate"),
+        avg_time_to_entry_min: metric("avg_time_to_entry_min"),
+
+        // counts among entered trades
+        cnt_sl: integer("cnt_sl").notNull(),
+        cnt_tp1: integer("cnt_tp1").notNull(),
+        cnt_tp2: integer("cnt_tp2").notNull(),
+        cnt_tp3: integer("cnt_tp3").notNull(),
+        avg_tps_hit: metric("avg_tps_hit"),
+        partner_tp_hits: integer("partner_tp_hits").notNull().default(0),
+        derived_tp_hits: integer("derived_tp_hits").notNull().default(0),
+
+        // concurrency (capital sizing), per this type x mode
+        max_concurrent: integer("max_concurrent").notNull().default(0),
+        avg_concurrent: metric("avg_concurrent"),
+        implied_capital_usd: metric("implied_capital_usd"),
+
+        // per-policy aggregates: {tp1,tp2,tp3,scaleout} ->
+        //   {total_r, avg_r, total_pct, total_usd, avg_usd, win_rate, profit_factor,
+        //    usd_partner, usd_derived}
+        policies: jsonb("policies").notNull(),
+    },
+    (table) => [
+        uniqueIndex("backtest_summary_unique").on(table.run_id, table.source_type, table.mode),
+    ]
+);
+
+export type backtest_summary_row = typeof backtest_summary.$inferSelect;
+export type new_backtest_summary_row = typeof backtest_summary.$inferInsert;

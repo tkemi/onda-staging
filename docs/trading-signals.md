@@ -370,6 +370,7 @@ their settings) is future; for now the setups channel is the shared user-facing 
 | Signal processing | `npm run analysis` | ~1 min | raw → trade_setups |
 | Futures pull | `npm run futures` | 3×/day (scheduled) | full sweep of futures zones (strength-counted) |
 | Spot pull | `npm run spot` | 1×/day 09:00 UTC | full sweep of spot accumulation plans |
+| Backtest | `npm run backtest` | on demand | replay candles vs setups (see §13a) |
 | Migrations | `npm run db:migrate` | on deploy | runs automatically (Procfile `release`) |
 
 `*:dev` variants run from source via `tsx`.
@@ -454,6 +455,32 @@ These are implemented with sensible defaults but are explicitly **open for tunin
 - **Liquidity Hunt quality gate** — `meets_quality`: confidence A/A+ and score ≥
   `MIN_LIQUIDITY_HUNT_SCORE` (9). Adjust to let more/fewer through.
 - **Repeat-notification window** — 0.5% entry similarity over 24h in `announce.ts`.
+
+---
+
+## 13a. Backtesting
+
+`npm run backtest` (`src/cron/backtest.ts`) replays historical Hyperliquid 1m candles
+against the stored `trade_setups` to measure how they would have performed. One run covers
+**every `source_type` × two modes**, so you compare strategies and rule-sets side by side.
+
+- **Modes:** `as_traded` (respects live invalidation + expiry — those become no-trades) and
+  `take_all` (ignore both; take every setup that reaches entry). Comparing the two shows
+  whether our rules helped or hurt.
+- **Window:** last `BACKTEST_WINDOW_DAYS` (default 7). Superseded setups are excluded
+  (near-duplicates). Trades open at the window end are marked `open`, never win/loss.
+- **Exit policies** (per trade, in R / % / $ at `$100 @ 5x`): exit-all-at-**TP1**,
+  **TP2**, **TP3**, and a **scale-out** (30/30/20 + 20% runner trailing 5%).
+- **Per type × mode metrics:** entry rate, time-to-entry, SL/TP1/TP2/TP3 counts, avg TPs hit,
+  **partner-vs-derived** TP hits & PnL, win rate, profit factor, MAE/MFE, and **concurrency**
+  (max & time-weighted-avg simultaneously-open positions → implied margin needed).
+- **Engine:** `simulate()` in `src/services/backtest_sim.ts` is pure and unit-tested;
+  candles come from `src/services/hl_candles.ts` (paged + cached).
+- **Tables:** `backtest_runs`, `backtest_summary` (one row per type × mode — the comparison),
+  `backtest_results` (one row per setup × mode — drill-down). `BACKTEST_PERSIST=false` runs
+  report-only.
+
+Assumptions: touch = fill, entry at zone midpoint, SL-first within a candle, HL prices.
 
 ---
 

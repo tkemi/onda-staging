@@ -15,3 +15,5 @@ export * from "./user_settings_service";
 export * from "./supersede";
 export * from "./announce";
 export * from "./futures_zones";
+export * from "./backtest_sim";
+export * from "./hl_candles";
