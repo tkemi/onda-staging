@@ -155,6 +155,13 @@
       "when": 1791467440300,
       "tag": "0021_perp_fills_positions",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791538647861,
+      "tag": "0022_backtest_capacity",
+      "breakpoints": true
     }
   ]
 }

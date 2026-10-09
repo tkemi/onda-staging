@@ -710,6 +710,12 @@ export const backtest_summary = pgTable(
         //   {total_r, avg_r, total_pct, total_usd, avg_usd, win_rate, profit_factor,
         //    usd_partner, usd_derived}
         policies: jsonb("policies").notNull(),
+
+        // capacity-constrained performance: if we could only hold N positions at once, which
+        // trades (chronologically) would we actually take, their outcome funnel, and PnL/policy.
+        //   { "unlimited": {...}, "10": {taken, cnt_sl, cnt_tp1, cnt_tp2, cnt_tp3, avg_tps,
+        //     win_rate, tp1_usd, tp2_usd, tp3_usd, scaleout_usd}, "20": {...}, ... }
+        capacity: jsonb("capacity"),
     },
     (table) => [
         uniqueIndex("backtest_summary_unique").on(table.run_id, table.source_type, table.mode),

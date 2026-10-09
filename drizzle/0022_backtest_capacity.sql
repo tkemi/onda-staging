@@ -1,0 +1,1 @@
+ALTER TABLE "backtest_summary" ADD COLUMN "capacity" jsonb;

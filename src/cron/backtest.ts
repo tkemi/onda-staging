@@ -30,6 +30,58 @@ const POLICIES = ["tp1", "tp2", "tp3", "scaleout"] as const;
 const num = (v: number | null): string | null => (v === null ? null : String(Number(v.toFixed(6))));
 const pct = (hit: number, total: number): number => (total > 0 ? hit / total : 0);
 
+// concurrency caps to evaluate: "if we could only hold N positions at once"
+const CAPS = [10, 20, 30, 40, 50];
+
+interface cap_trade {
+    entry: number;
+    resolved: number;
+    max_tp: number;      // 0..3
+    is_sl: boolean;      // outcome was a straight stop-out (no TP)
+    pnl: Record<string, number>; // per-policy usd
+}
+
+export interface cap_result {
+    taken: number;
+    cnt_sl: number;
+    cnt_tp1: number;
+    cnt_tp2: number;
+    cnt_tp3: number;
+    tps_sum: number;     // sum of max_tp over taken (for avg)
+    usd: Record<string, number>;
+}
+
+// Greedy capacity gate: walk entries chronologically; take a trade only if a slot is free
+// (a slot frees when its position resolves). Returns, over the taken trades: the count,
+// the outcome breakdown (SL / reached TP1 / TP2 / TP3), and $ per exit policy.
+export const capacity_sweep = (trades: cap_trade[], cap: number): cap_result => {
+    const sorted = [...trades].sort((a, b) => a.entry - b.entry);
+    const open: number[] = []; // resolved times of currently-held positions
+    const res: cap_result = {
+        taken: 0, cnt_sl: 0, cnt_tp1: 0, cnt_tp2: 0, cnt_tp3: 0, tps_sum: 0,
+        usd: {tp1: 0, tp2: 0, tp3: 0, scaleout: 0},
+    };
+
+    for (const t of sorted) {
+        // free slots whose positions resolved at or before this entry
+        for (let i = open.length - 1; i >= 0; i--) {
+            if (open[i]! <= t.entry) open.splice(i, 1);
+        }
+        if (open.length < cap) {
+            res.taken++;
+            open.push(t.resolved);
+            if (t.is_sl) res.cnt_sl++;
+            if (t.max_tp >= 1) res.cnt_tp1++;
+            if (t.max_tp >= 2) res.cnt_tp2++;
+            if (t.max_tp >= 3) res.cnt_tp3++;
+            res.tps_sum += t.max_tp;
+            for (const p of POLICIES) res.usd[p] = (res.usd[p] ?? 0) + (t.pnl[p] ?? 0);
+        }
+    }
+
+    return res;
+};
+
 interface sim_row {
     setup: trade_setup;
     mode: bt_mode;
@@ -143,10 +195,48 @@ const summarize = (
         };
     }
 
-    const intervals: Array<[number, number]> = entered
-        .filter((r) => r.result.entry_at_ms !== null)
+    const entered_with_entry = entered.filter((r) => r.result.entry_at_ms !== null);
+    const intervals: Array<[number, number]> = entered_with_entry
         .map((r) => [r.result.entry_at_ms!, r.result.resolved_at_ms ?? window_end]);
     const conc = concurrency(intervals, window_start, window_end);
+
+    // capacity-constrained performance: cap simultaneous positions at 10/20/30/40/50
+    const cap_trades: cap_trade[] = entered_with_entry.map((r) => ({
+        entry: r.result.entry_at_ms!,
+        resolved: r.result.resolved_at_ms ?? window_end,
+        max_tp: r.result.max_tp,
+        is_sl: r.result.outcome === "sl",
+        pnl: {
+            tp1: r.result.policies.tp1.usd, tp2: r.result.policies.tp2.usd,
+            tp3: r.result.policies.tp3.usd, scaleout: r.result.policies.scaleout.usd,
+        },
+    }));
+    const r2 = (n: number) => Number(n.toFixed(2));
+    // one row per cap (plus "unlimited"): entries taken, outcome breakdown over the taken
+    // subset, and $ per exit policy — so the capped report mirrors the uncapped funnel.
+    const cap_row = (taken: number, sl: number, t1: number, t2: number, t3: number,
+                     tps_sum: number, usd: {tp1: number; tp2: number; tp3: number; scaleout: number}) => ({
+        taken,
+        cnt_sl: sl, cnt_tp1: t1, cnt_tp2: t2, cnt_tp3: t3,
+        avg_tps: num(taken ? tps_sum / taken : 0),
+        win_rate: num(pct(t1, taken)),
+        tp1_usd: r2(usd.tp1), tp2_usd: r2(usd.tp2), tp3_usd: r2(usd.tp3), scaleout_usd: r2(usd.scaleout),
+    });
+    const capacity: Record<string, unknown> = {
+        unlimited: cap_row(entered.length, cnt_sl, cnt_tp1, cnt_tp2, cnt_tp3, tps_hit, {
+            tp1: (policies.tp1 as {total_usd: number}).total_usd,
+            tp2: (policies.tp2 as {total_usd: number}).total_usd,
+            tp3: (policies.tp3 as {total_usd: number}).total_usd,
+            scaleout: (policies.scaleout as {total_usd: number}).total_usd,
+        }),
+    };
+    for (const cap of CAPS) {
+        const res = capacity_sweep(cap_trades, cap);
+        capacity[String(cap)] = cap_row(
+            res.taken, res.cnt_sl, res.cnt_tp1, res.cnt_tp2, res.cnt_tp3, res.tps_sum,
+            {tp1: res.usd.tp1 ?? 0, tp2: res.usd.tp2 ?? 0, tp3: res.usd.tp3 ?? 0, scaleout: res.usd.scaleout ?? 0},
+        );
+    }
 
     return {
         run_id, source_type, mode,
@@ -161,6 +251,7 @@ const summarize = (
         avg_concurrent: num(conc.avg),
         implied_capital_usd: num(conc.max * DEFAULT_OPTS.margin_usd),
         policies,
+        capacity,
     };
 };
 
